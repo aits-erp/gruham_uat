@@ -3,7 +3,6 @@
 import Image from "next/image";
 import React, { useState, useEffect } from "react";
 import { FaHeart } from "react-icons/fa";
-import { IoCartOutline } from "react-icons/io5";
 import { useWishlist } from "../../context/WishlistContext";
 import { useCart } from "../../context/CartContext";
 import { useRouter, useParams } from "next/navigation";
@@ -19,8 +18,8 @@ const CategoryPage = () => {
 
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [openSizeSelector, setOpenSizeSelector] = useState(null);
-  const [selectedSizes, setSelectedSizes] = useState({});
+  const [openVariantSelector, setOpenVariantSelector] = useState(null);
+  const [selectedVariants, setSelectedVariants] = useState({});
 
   useEffect(() => {
     if (categoryName) {
@@ -29,97 +28,169 @@ const CategoryPage = () => {
   }, [categoryName]);
 
   const fetchCategoryItems = async () => {
-  setLoading(true);
-  try {
-    // Use public endpoint with category filter
-    const res = await axios.get(`/api/items?category=${encodeURIComponent(categoryName)}`);
-    
-    if (res.data.success) {
-      const items = res.data.data || [];
+    setLoading(true);
+    try {
+      const res = await axios.get(`/api/items?category=${encodeURIComponent(categoryName)}`);
       
-      // Map items to product format
-      const mappedProducts = items.map(item => ({
-        id: item._id,
-        name: item.itemName,
-        price: item.unitPrice,
-        image: item.imageUrl || "/placeholder-image.jpg",
-        sizes: getSizesFromUOM(item.uom, item.itemType),
-        description: item.description,
-        category: item.category,
-        itemType: item.itemType
-      }));
-      
-      setProducts(mappedProducts);
+      if (res.data.success) {
+        const items = res.data.data || [];
+        
+        const mappedProducts = items.map(item => ({
+          id: item._id,
+          name: item.itemName,
+          price: item.unitPrice,
+          image: item.imageUrl || "/placeholder-image.jpg",
+          variants: item.enableVariants ? (item.variants || []) : [],
+          hasVariants: item.enableVariants && (item.variants?.length > 0),
+          description: item.description,
+          category: item.category,
+          itemType: item.itemType,
+          uom: item.uom,
+          totalStock: item.totalStock,
+          status: item.status
+        }));
+        
+        // Filter only active products
+        const activeProducts = mappedProducts.filter(p => p.status === "active");
+        setProducts(activeProducts);
+      } else {
+        setProducts([]);
+      }
+    } catch (error) {
+      console.error("Error fetching category items:", error);
+      toast.error("Failed to load items");
+      setProducts([]);
+    } finally {
+      setLoading(false);
     }
-  } catch (error) {
-    console.error("Error fetching category items:", error);
-    toast.error("Failed to load items");
-  } finally {
-    setLoading(false);
-  }
-};
-
-  // Helper function to generate sizes based on UOM and item type
-  const getSizesFromUOM = (uom, itemType) => {
-    if (itemType === "Service") {
-      return ["Basic", "Standard", "Premium", "Enterprise"];
-    }
-    
-    if (itemType === "Raw Material") {
-      const sizeMap = {
-        "KG": ["1kg", "5kg", "10kg", "25kg", "50kg"],
-        "MTP": ["1MT", "5MT", "10MT", "25MT"],
-        "PC": ["10pcs", "25pcs", "50pcs", "100pcs"],
-        "LTR": ["1L", "5L", "10L", "20L", "50L"],
-        "MTR": ["10m", "25m", "50m", "100m"]
-      };
-      return sizeMap[uom] || ["1kg", "5kg", "10kg", "25kg"];
-    }
-    
-    const sizeMap = {
-      "KG": ["250gm", "500gm", "1kg", "2kg"],
-      "MTP": ["1kg", "5kg", "10kg", "25kg"],
-      "PC": ["1pc", "2pc", "5pc", "10pc"],
-      "LTR": ["250ml", "500ml", "1L", "2L"],
-      "MTR": ["1m", "2m", "5m", "10m"]
-    };
-    return sizeMap[uom] || ["250gm", "500gm", "1kg"];
   };
 
-  const handleOpenSizes = (productId) => {
-    setOpenSizeSelector(productId);
-    setSelectedSizes((prev) => ({
+  const getDiscountedPrice = (price, discount) => {
+    if (discount && discount > 0) {
+      return price * (1 - discount / 100);
+    }
+    return price;
+  };
+
+  const getVariantDisplayName = (variant) => {
+    if (variant.name) return variant.name;
+    if (variant.quantity) {
+      const uom = variant.uom || "unit";
+      if (uom === "KG") {
+        return variant.quantity >= 1000 
+          ? `${variant.quantity/1000}kg` 
+          : `${variant.quantity}gm`;
+      }
+      if (uom === "LTR") {
+        return variant.quantity >= 1000 
+          ? `${variant.quantity/1000}L` 
+          : `${variant.quantity}ml`;
+      }
+      return `${variant.quantity} ${uom}`;
+    }
+    return "Variant";
+  };
+
+  const getProductDisplayPrice = (product) => {
+    if (product.hasVariants && product.variants.length > 0) {
+      const prices = product.variants.map(v => getDiscountedPrice(v.price, v.discount));
+      const minPrice = Math.min(...prices);
+      const maxPrice = Math.max(...prices);
+      
+      if (minPrice === maxPrice) {
+        return `₹${minPrice.toFixed(2)}`;
+      }
+      return `₹${minPrice.toFixed(2)} - ₹${maxPrice.toFixed(2)}`;
+    }
+    return `₹${product.price.toFixed(2)}`;
+  };
+
+  const getBestDiscount = (product) => {
+    if (product.hasVariants && product.variants.length > 0) {
+      const maxDiscount = Math.max(...product.variants.map(v => v.discount || 0));
+      return maxDiscount > 0 ? maxDiscount : null;
+    }
+    return product.discount > 0 ? product.discount : null;
+  };
+
+  const handleOpenVariants = (productId) => {
+    setOpenVariantSelector(productId);
+    const product = products.find(p => p.id === productId);
+    if (product && product.hasVariants && product.variants.length > 0) {
+      if (!selectedVariants[productId]) {
+        setSelectedVariants((prev) => ({
+          ...prev,
+          [productId]: product.variants[0],
+        }));
+      }
+    }
+  };
+
+  const handleVariantSelect = (productId, variant) => {
+    setSelectedVariants((prev) => ({
       ...prev,
-      [productId]:
-        prev[productId] ||
-        products.find((p) => p.id === productId)?.sizes[0],
+      [productId]: variant,
     }));
   };
 
-  const handleSizeSelect = (productId, size) => {
-    setSelectedSizes((prev) => ({
-      ...prev,
-      [productId]: size,
-    }));
+  const handleAddToCart = (product) => {
+    if (product.hasVariants) {
+      if (!selectedVariants[product.id]) {
+        toast.error("Please select a variant");
+        return;
+      }
+      handleConfirmAddToCart(product);
+    } else {
+      // No variants, add directly
+      addToCart({
+        id: product.id,
+        name: product.name,
+        price: product.price,
+        img: product.image,
+        quantity: 1,
+      });
+      toast.success(`${product.name} added to cart`);
+      router.push("/cart");
+    }
   };
 
   const handleConfirmAddToCart = (product) => {
-    const finalSize = selectedSizes[product.id] || product.sizes[0];
+    const selectedVariant = selectedVariants[product.id];
+    
+    if (!selectedVariant) {
+      toast.error("Please select a variant");
+      return;
+    }
+
+    const finalPrice = getDiscountedPrice(selectedVariant.price, selectedVariant.discount);
+    const finalName = `${product.name} - ${getVariantDisplayName(selectedVariant)}`;
 
     addToCart({
       id: product.id,
-      name: product.name,
-      price: product.price,
+      name: finalName,
+      price: finalPrice,
+      originalPrice: selectedVariant.price,
       img: product.image,
       quantity: 1,
-      selectedSize: finalSize,
+      variantId: selectedVariant._id,
+      variantName: getVariantDisplayName(selectedVariant),
+      variantQuantity: selectedVariant.quantity,
+      uom: product.uom
     });
 
-    setOpenSizeSelector(null);
+    setOpenVariantSelector(null);
+    toast.success(`${finalName} added to cart`);
     router.push("/cart");
   };
 
-  // Loading state
+  const handleBuyNow = (product) => {
+    if (product.hasVariants && !selectedVariants[product.id]) {
+      toast.error("Please select a variant first");
+      return;
+    }
+    handleAddToCart(product);
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-[#f5f1ea] px-6 py-10">
@@ -131,17 +202,15 @@ const CategoryPage = () => {
     );
   }
 
-  // No products available
   if (products.length === 0) {
     return (
       <div className="min-h-screen bg-[#f5f1ea] px-6 py-10">
         <h2 className="mb-10 text-left text-3xl font-bold text-[#1f1f1f]">
-          {categoryName || "Category"} ({products.length})
+          {categoryName || "Category"} (0)
         </h2>
         <div className="text-center py-16">
           <div className="text-6xl mb-4">🛒</div>
           <p className="text-gray-600 text-lg">No items found in this category.</p>
-          <p className="text-gray-500 mt-2">Please check back later for our offerings!</p>
           <button
             onClick={() => router.push("/")}
             className="mt-6 px-6 py-2 bg-[#5c5f2a] text-white rounded-full hover:bg-[#4a4d20] transition"
@@ -162,13 +231,15 @@ const CategoryPage = () => {
       <div className="grid grid-cols-1 gap-8 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
         {products.map((product) => {
           const isFav = isInWishlist(product.id);
-          const isOpen = openSizeSelector === product.id;
-          const activeSize = selectedSizes[product.id] || product.sizes[0];
+          const isOpen = openVariantSelector === product.id;
+          const selectedVariant = selectedVariants[product.id];
+          const bestDiscount = getBestDiscount(product);
+          const isOutOfStock = product.totalStock === 0;
 
           return (
             <div
               key={product.id}
-              className="rounded-2xl bg-white p-4 text-center shadow-sm transition hover:shadow-md"
+              className={`rounded-2xl bg-white p-4 text-center shadow-sm transition hover:shadow-md relative group ${isOutOfStock ? 'opacity-60' : ''}`}
             >
               <div className="relative h-56 overflow-hidden rounded-xl bg-[#f3e6d3]">
                 <button
@@ -180,7 +251,6 @@ const CategoryPage = () => {
                       price: product.price,
                       img: product.image,
                     });
-                    router.push("/favourites");
                   }}
                   className={`absolute top-3 right-3 z-10 rounded-full p-2 shadow transition ${
                     isFav
@@ -195,53 +265,92 @@ const CategoryPage = () => {
                   src={product.image}
                   alt={product.name}
                   fill
-                  className="object-cover"
+                  className="object-cover group-hover:scale-105 transition duration-300"
                   onError={(e) => {
                     e.target.onerror = null;
                     e.target.src = "/placeholder-image.jpg";
                   }}
                 />
+
+                {bestDiscount && (
+                  <div className="absolute left-3 top-3 z-10 bg-red-500 text-white text-xs font-bold px-2 py-1 rounded-full">
+                    {bestDiscount}% OFF
+                  </div>
+                )}
+
+                {isOutOfStock && (
+                  <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-10">
+                    <span className="bg-red-500 text-white px-3 py-1 rounded-full text-sm font-bold">
+                      Out of Stock
+                    </span>
+                  </div>
+                )}
               </div>
 
               <div className="mt-4">
-                <h3 className="line-clamp-2 text-[28px] font-semibold text-[#1f1f1f]">
+                <h3 className="line-clamp-2 text-xl font-semibold text-[#1f1f1f]">
                   {product.name}
                 </h3>
 
-                <p className="mt-2 text-lg font-bold text-[#6b7340]">
-                  ₹{product.price}
-                </p>
+                <div className="mt-2">
+                  <p className="text-lg font-bold text-[#6b7340]">
+                    {getProductDisplayPrice(product)}
+                  </p>
+                  {product.hasVariants && product.variants.length > 0 && (
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      {product.variants.length} variants available
+                    </p>
+                  )}
+                </div>
 
                 {!isOpen ? (
                   <button
                     type="button"
-                    onClick={() => handleOpenSizes(product.id)}
-                    className="mt-4 flex w-full items-center justify-center gap-2 rounded-full bg-[#5c5f2a] py-3 text-sm font-semibold text-white transition hover:bg-[#4a4d20]"
+                    onClick={() => product.hasVariants ? handleOpenVariants(product.id) : handleAddToCart(product)}
+                    disabled={isOutOfStock}
+                    className={`mt-4 flex w-full items-center justify-center gap-2 rounded-full py-3 text-sm font-semibold text-white transition ${
+                      isOutOfStock
+                        ? "bg-gray-300 cursor-not-allowed"
+                        : "bg-[#5c5f2a] hover:bg-[#4a4d20]"
+                    }`}
                   >
-                    Add to Cart
+                    {isOutOfStock ? "Out of Stock" : (product.hasVariants ? "Select Variant" : "Add to Cart")}
                   </button>
                 ) : (
                   <div className="mt-4 rounded-2xl border border-[#e8dfd1] bg-[#faf7f2] p-4">
                     <p className="mb-3 text-sm font-semibold text-[#3d3d3d]">
-                      Select size
+                      Select {product.itemType === "Service" ? "Service" : "Variant"}
                     </p>
 
-                    <div className="flex flex-wrap justify-center gap-2">
-                      {product.sizes.map((size) => {
-                        const isSelected = activeSize === size;
+                    <div className="flex flex-wrap justify-center gap-2 max-h-40 overflow-y-auto">
+                      {product.variants.map((variant, idx) => {
+                        const isSelected = selectedVariant?._id === variant._id;
+                        const variantPrice = getDiscountedPrice(variant.price, variant.discount);
+                        const variantName = getVariantDisplayName(variant);
+                        const hasDiscount = variant.discount > 0;
 
                         return (
                           <button
-                            key={size}
+                            key={idx}
                             type="button"
-                            onClick={() => handleSizeSelect(product.id, size)}
+                            onClick={() => handleVariantSelect(product.id, variant)}
                             className={`rounded-full px-4 py-2 text-sm font-medium transition ${
                               isSelected
                                 ? "bg-[#5c5f2a] text-white"
-                                : "border border-[#d8d1c4] bg-white text-[#333]"
+                                : "border border-[#d8d1c4] bg-white text-[#333] hover:border-[#5c5f2a]"
                             }`}
                           >
-                            {size}
+                            <div className="flex flex-col items-center">
+                              <span>{variantName}</span>
+                              <span className={`text-xs ${isSelected ? "text-white/80" : "text-gray-500"}`}>
+                                ₹{variantPrice.toFixed(2)}
+                                {hasDiscount && (
+                                  <span className="line-through ml-1 text-gray-400">
+                                    ₹{variant.price}
+                                  </span>
+                                )}
+                              </span>
+                            </div>
                           </button>
                         );
                       })}
@@ -250,18 +359,17 @@ const CategoryPage = () => {
                     <div className="mt-4 flex gap-3">
                       <button
                         type="button"
-                        onClick={() => setOpenSizeSelector(null)}
+                        onClick={() => setOpenVariantSelector(null)}
                         className="w-1/2 rounded-full border border-[#d8d1c4] bg-white px-4 py-2 text-sm font-medium text-[#333] transition hover:bg-[#f3efe8]"
                       >
                         Cancel
                       </button>
-
                       <button
                         type="button"
-                        onClick={() => handleConfirmAddToCart(product)}
+                        onClick={() => handleAddToCart(product)}
                         className="w-1/2 rounded-full bg-[#5c5f2a] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#4a4d20]"
                       >
-                        Confirm
+                        Add to Cart
                       </button>
                     </div>
                   </div>

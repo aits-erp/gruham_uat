@@ -110,69 +110,84 @@ export default function CheckoutPage() {
     });
   };
 
-  // ✅ FIXED: Transform cart items with proper validation
-  const transformCartItems = () => {
-    // Validate cart exists
-    if (!cart || cart.length === 0) {
-      toast.error("Your cart is empty");
-      return [];
+ // In checkout/page.js - Update the transformCartItems function
+const transformCartItems = () => {
+  // Validate cart exists
+  if (!cart || cart.length === 0) {
+    toast.error("Your cart is empty");
+    return [];
+  }
+  
+  // ✅ Get the REAL companyId from cart items (NOT warehouse ID)
+  let companyId = null;
+  let validItem = null;
+  
+  for (const item of cart) {
+    if (item.companyId) {
+      companyId = item.companyId;
+      validItem = item;
+      break;
     }
+  }
+  
+  if (!companyId) {
+    console.error("No companyId found in any cart item:", cart);
+    toast.error("Invalid product configuration. Please remove items and try again.");
+    return [];
+  }
+  
+  console.log("✅ Using REAL companyId for order:", companyId);
+  console.log("Warehouse ID (for reference):", cart[0]?.warehouseId);
+  
+  // Validate companyId format (should be MongoDB ObjectId)
+  const isValidObjectId = /^[0-9a-fA-F]{24}$/.test(companyId);
+  if (!isValidObjectId) {
+    console.error("Invalid companyId format:", companyId);
+    toast.error("Invalid company configuration. Please contact support.");
+    return [];
+  }
+  
+  return cart.map(item => {
+    const gstRate = 18;
+    const unitPrice = item.price;
+    const discount = item.discount || 0;
+    const quantity = item.quantity;
+    const priceAfterDiscount = unitPrice - discount;
+    const totalAmount = quantity * priceAfterDiscount;
     
-    // Get companyId from first item that has it
-    const validItem = cart.find(item => item.companyId);
+    const cgstAmount = totalAmount * (gstRate / 2 / 100);
+    const sgstAmount = totalAmount * (gstRate / 2 / 100);
+    const gstAmount = cgstAmount + sgstAmount;
     
-    if (!validItem) {
-      console.error("No valid companyId in cart items:", cart);
-      toast.error("Invalid product configuration. Please remove items and try again.");
-      return [];
-    }
-    
-    const companyId = validItem.companyId;
-    
-    console.log("Using companyId from cart:", companyId);
-    console.log("Cart items:", cart);
-    
-    return cart.map(item => {
-      const gstRate = 18;
-      const unitPrice = item.price;
-      const discount = item.discount || 0;
-      const quantity = item.quantity;
-      const priceAfterDiscount = unitPrice - discount;
-      const totalAmount = quantity * priceAfterDiscount;
-      
-      const cgstAmount = totalAmount * (gstRate / 2 / 100);
-      const sgstAmount = totalAmount * (gstRate / 2 / 100);
-      const gstAmount = cgstAmount + sgstAmount;
-      
-      return {
-        item: item.id,
-        itemCode: item.code || `ITEM-${item.id}`,
-        itemName: item.name,
-        itemDescription: item.description || "",
-        quantity: quantity,
-        orderedQuantity: quantity,
-        unitPrice: unitPrice,
-        discount: discount,
-        freight: 0,
-        gstRate: gstRate,
-        taxOption: "GST",
-        priceAfterDiscount: priceAfterDiscount,
-        totalAmount: totalAmount,
-        gstAmount: gstAmount,
-        cgstAmount: cgstAmount,
-        sgstAmount: sgstAmount,
-        igstAmount: 0,
-        tdsAmount: 0,
-        warehouse: item.warehouseId || null,
-        warehouseName: item.warehouseName || "",
-        warehouseCode: "",
-        stockAdded: false,
-        companyId: companyId, // Use the valid companyId from cart
-        selectedSize: item.selectedSize,
-        selectedVariant: item.selectedVariant || null
-      };
-    });
-  };
+    return {
+      item: item.id,
+      itemCode: item.code || `ITEM-${item.id}`,
+      itemName: item.name,
+      itemDescription: item.description || "",
+      quantity: quantity,
+      orderedQuantity: quantity,
+      unitPrice: unitPrice,
+      discount: discount,
+      freight: 0,
+      gstRate: gstRate,
+      taxOption: "GST",
+      priceAfterDiscount: priceAfterDiscount,
+      totalAmount: totalAmount,
+      gstAmount: gstAmount,
+      cgstAmount: cgstAmount,
+      sgstAmount: sgstAmount,
+      igstAmount: 0,
+      tdsAmount: 0,
+      warehouse: item.warehouseId || null,
+      warehouseName: item.warehouseName || "",
+      warehouseCode: "",
+      stockAdded: false,
+      companyId: companyId, // ✅ Use the validated company ID
+      selectedSize: item.selectedSize,
+      selectedVariant: item.selectedVariant || null
+    };
+  });
+};
 
   const handleSubmit = async (e) => {
     e.preventDefault();

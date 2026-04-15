@@ -8,7 +8,7 @@ export async function POST(req) {
   await dbConnect();
 
   try {
-    const { phone, otp, location } = await req.json();
+    const { phone, otp, location, userType = "customer" } = await req.json();
 
     if (!phone || !otp) {
       return NextResponse.json(
@@ -54,14 +54,14 @@ export async function POST(req) {
       }
       const customerCode = `CUST${String(nextNumber).padStart(6, '0')}`;
       
-      // Create new user with location if provided
+      // Create new user with specified type
       const userData = {
         phone: phone,
         name: `User ${phone.slice(-4)}`,
-        roles: ["customer"],
-        type: "customer",
+        roles: [userType],
+        type: userType,
         status: "active",
-        customerCode: customerCode,
+        customerCode: userType === "customer" ? customerCode : undefined,
         isVerified: true,
       };
       

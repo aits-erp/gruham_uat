@@ -1,3 +1,4 @@
+// app/api/products/location-based/route.js
 import { NextResponse } from "next/server";
 import dbConnect from "@/lib/db";
 import Inventory from "@/models/Inventory";
@@ -7,7 +8,7 @@ import mongoose from "mongoose";
 
 // Haversine formula to calculate distance
 function calculateDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371; // Earth's radius in km
+  const R = 6371;
   const dLat = (lat2 - lat1) * Math.PI / 180;
   const dLon = (lon2 - lon1) * Math.PI / 180;
   const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
@@ -55,7 +56,8 @@ export async function GET(req) {
           success: true, 
           data: [], 
           message: "No company configured",
-          nearestWarehouse: null
+          nearestWarehouse: null,
+          companyId: null
         });
       }
     }
@@ -67,7 +69,8 @@ export async function GET(req) {
         success: true, 
         data: [], 
         message: "Invalid company ID",
-        nearestWarehouse: null
+        nearestWarehouse: null,
+        companyId: null
       });
     }
     
@@ -82,7 +85,8 @@ export async function GET(req) {
         success: true, 
         data: [], 
         message: "Error fetching warehouses",
-        nearestWarehouse: null
+        nearestWarehouse: null,
+        companyId: null
       });
     }
     
@@ -91,7 +95,8 @@ export async function GET(req) {
         success: true, 
         data: [], 
         message: "No warehouses found",
-        nearestWarehouse: null
+        nearestWarehouse: null,
+        companyId: null
       });
     }
     
@@ -101,7 +106,6 @@ export async function GET(req) {
       if (userLat && userLng && !isNaN(userLat) && !isNaN(userLng)) {
         if (warehouse.location && warehouse.location.coordinates && warehouse.location.coordinates.length === 2) {
           const [whLng, whLat] = warehouse.location.coordinates;
-          // Only calculate if coordinates are valid (not empty)
           if (whLat && whLng && whLat !== 0 && whLng !== 0) {
             distance = calculateDistance(userLat, userLng, whLat, whLng);
           }
@@ -115,13 +119,11 @@ export async function GET(req) {
       w.distance !== null && !isNaN(w.distance)
     );
     
-    // ✅ FIND ONLY THE SINGLE NEAREST WAREHOUSE
+    // Find the single nearest warehouse
     let nearestWarehouse = null;
     
     if (warehousesWithValidDistance.length > 0) {
-      // Sort by distance (nearest first)
       warehousesWithValidDistance.sort((a, b) => a.distance - b.distance);
-      // Take ONLY the first (nearest) warehouse
       nearestWarehouse = warehousesWithValidDistance[0];
       console.log("Nearest warehouse found:", {
         name: nearestWarehouse.warehouseName,
@@ -129,22 +131,21 @@ export async function GET(req) {
         distance: nearestWarehouse.distance
       });
     } else {
-      // If no coordinates in warehouses, use the first warehouse
       nearestWarehouse = warehouses[0];
       console.log("No coordinates, using first warehouse:", nearestWarehouse.warehouseName);
     }
     
-    // ✅ USE ONLY THE NEAREST WAREHOUSE ID
+    // Use only the nearest warehouse ID
     const warehouseId = nearestWarehouse._id;
     
     console.log("Using ONLY nearest warehouse:", nearestWarehouse.warehouseName);
     
-    // ✅ Get inventory ONLY from the nearest warehouse
+    // Get inventory only from the nearest warehouse
     let inventoryItems = [];
     try {
       inventoryItems = await Inventory.find({
         companyId: new mongoose.Types.ObjectId(companyId),
-        warehouse: warehouseId,  // Single warehouse, not array
+        warehouse: warehouseId,
         quantity: { $gt: 0 }
       })
       .populate({
@@ -164,7 +165,7 @@ export async function GET(req) {
     // Filter out items where item is null
     const availableProducts = inventoryItems.filter(inv => inv.item);
     
-    // Group by item (in case same item appears multiple times in same warehouse)
+    // Group by item
     const productMap = new Map();
     
     availableProducts.forEach(inv => {
@@ -200,6 +201,7 @@ export async function GET(req) {
     
     const products = Array.from(productMap.values());
     
+    // ✅ IMPORTANT: Return the ACTUAL companyId, not warehouse ID
     return NextResponse.json({
       success: true,
       data: products,
@@ -208,8 +210,10 @@ export async function GET(req) {
         id: nearestWarehouse._id,
         name: nearestWarehouse.warehouseName,
         city: nearestWarehouse.city,
+        companyId: companyId, // ✅ Return actual company ID
         distance: nearestWarehouse.distance ? `${nearestWarehouse.distance.toFixed(1)} km` : null
       },
+      companyId: companyId, // ✅ Return actual company ID at root level
       totalProducts: products.length
     });
     
@@ -219,7 +223,8 @@ export async function GET(req) {
       success: true, 
       data: [], 
       message: error.message,
-      nearestWarehouse: null
+      nearestWarehouse: null,
+      companyId: null
     });
   }
 }

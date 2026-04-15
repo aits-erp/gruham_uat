@@ -1,3 +1,4 @@
+// app/(dashboard)/products/page.js
 "use client";
 
 import { useState, useEffect, useRef } from "react";
@@ -26,9 +27,9 @@ export default function Products() {
   const [addedItemName, setAddedItemName] = useState("");
   const [locationInfo, setLocationInfo] = useState(null);
   const [showLocationModal, setShowLocationModal] = useState(false);
-  const [nearestWarehouses, setNearestWarehouses] = useState([]);
+  const [nearestWarehouse, setNearestWarehouse] = useState(null);
+  const [globalCompanyId, setGlobalCompanyId] = useState(null);
   
-  // ✅ Add refs to prevent multiple API calls
   const hasFetchedRef = useRef(false);
   const isFetchingRef = useRef(false);
 
@@ -51,7 +52,6 @@ export default function Products() {
           itemType: item.itemType,
           uom: item.uom,
           totalStock: 999,
-          warehouses: [],
           companyId: null,
           warehouseId: null,
           warehouseName: null
@@ -65,79 +65,82 @@ export default function Products() {
   };
 
   // Fetch products based on location (for logged in users)
-const fetchProductsByLocation = async (location) => {
-  if (isFetchingRef.current) {
-    console.log("Already fetching, skipping...");
-    return;
-  }
-  
-  isFetchingRef.current = true;
-  setLoading(true);
-  
-  try {
-    const city = location?.city || userLocation?.city || "Unknown";
-    const lat = location?.lat || userLocation?.lat;
-    const lng = location?.lng || userLocation?.lng;
+  const fetchProductsByLocation = async (location) => {
+    if (isFetchingRef.current) {
+      console.log("Already fetching, skipping...");
+      return;
+    }
     
-    const token = localStorage.getItem("token");
+    isFetchingRef.current = true;
+    setLoading(true);
     
-    const res = await axios.get("/api/products/location-based", {
-      params: { city, lat, lng },
-      headers: {
-        Authorization: token ? `Bearer ${token}` : undefined
-      }
-    });
-    
-    if (res.data.success) {
-      const items = res.data.data || [];
-      const nearestWarehouse = res.data.nearestWarehouse;
+    try {
+      const city = location?.city || userLocation?.city || "Unknown";
+      const lat = location?.lat || userLocation?.lat;
+      const lng = location?.lng || userLocation?.lng;
       
-      // ✅ Get companyId from nearest warehouse
-      const companyId = nearestWarehouse?.id || nearestWarehouse?._id || null;
+      const token = localStorage.getItem("token");
       
-      console.log("CompanyId from warehouse:", companyId);
-      console.log("Nearest warehouse:", nearestWarehouse);
+      const res = await axios.get("/api/products/location-based", {
+        params: { city, lat, lng },
+        headers: {
+          Authorization: token ? `Bearer ${token}` : undefined
+        }
+      });
       
-      const mappedProducts = items.map(item => ({
-        id: item._id,
-        name: item.itemName,
-        price: item.unitPrice,
-        img: item.imageUrl || PLACEHOLDER_IMAGE,
-        variants: item.enableVariants ? (item.variants || []) : [],
-        hasVariants: item.enableVariants && (item.variants?.length > 0),
-        description: item.description,
-        category: item.category,
-        itemType: item.itemType,
-        uom: item.uom,
-        totalStock: item.totalStock,
-        warehouses: item.warehouses,
-        companyId: companyId, // ✅ Set companyId
-        warehouseId: nearestWarehouse?._id,
-        warehouseName: nearestWarehouse?.name
-      }));
-      
-      console.log("First product companyId:", mappedProducts[0]?.companyId);
-      
-      setProducts(mappedProducts);
-      setLocationInfo(res.data.userLocation);
-      setNearestWarehouses(res.data.nearestWarehouses || []);
-      
-      if (mappedProducts.length === 0) {
-        toast.info("No products available in your location. Showing all products.");
+      if (res.data.success) {
+        const items = res.data.data || [];
+        const nearestWarehouseData = res.data.nearestWarehouse;
+        
+        // ✅ Get the REAL companyId from response
+        const companyId = res.data.companyId || nearestWarehouseData?.companyId;
+        
+        console.log("✅ Real CompanyId from API:", companyId);
+        console.log("Warehouse ID (different from company ID):", nearestWarehouseData?.id);
+        
+        setGlobalCompanyId(companyId);
+        setNearestWarehouse(nearestWarehouseData);
+        
+        const mappedProducts = items.map(item => ({
+          id: item._id,
+          name: item.itemName,
+          price: item.unitPrice,
+          img: item.imageUrl || PLACEHOLDER_IMAGE,
+          variants: item.enableVariants ? (item.variants || []) : [],
+          hasVariants: item.enableVariants && (item.variants?.length > 0),
+          description: item.description,
+          category: item.category,
+          itemType: item.itemType,
+          uom: item.uom,
+          totalStock: item.totalStock,
+          companyId: companyId, // ✅ Use REAL company ID
+          warehouseId: nearestWarehouseData?.id,
+          warehouseName: nearestWarehouseData?.name
+        }));
+        
+        console.log("First product companyId:", mappedProducts[0]?.companyId);
+        console.log("First product warehouseId:", mappedProducts[0]?.warehouseId);
+        
+        setProducts(mappedProducts);
+        setLocationInfo(res.data.userLocation);
+        
+        if (mappedProducts.length === 0) {
+          toast.info("No products available in your location. Showing all products.");
+          await fetchAllProducts();
+        }
+      } else {
         await fetchAllProducts();
       }
-    } else {
+    } catch (error) {
+      console.error("Error fetching location-based products:", error);
       await fetchAllProducts();
+    } finally {
+      setLoading(false);
+      isFetchingRef.current = false;
     }
-  } catch (error) {
-    console.error("Error fetching location-based products:", error);
-    await fetchAllProducts();
-  } finally {
-    setLoading(false);
-    isFetchingRef.current = false;
-  }
-};
-  // ✅ Initial load - only once
+  };
+  
+  // Initial load
   useEffect(() => {
     if (hasFetchedRef.current) return;
     
@@ -158,13 +161,12 @@ const fetchProductsByLocation = async (location) => {
     };
     
     loadProducts();
-  }, [isAuthenticated]); // ✅ Only depend on isAuthenticated
+  }, [isAuthenticated]);
 
-  // ✅ Handle manual location update separately
+  // Handle manual location update
   const handleUpdateLocation = async () => {
     const newLocation = await updateUserLocation();
     if (newLocation) {
-      // Reset fetch flag to allow reload
       hasFetchedRef.current = false;
       await fetchProductsByLocation(newLocation);
       setShowLocationModal(false);
@@ -230,48 +232,55 @@ const fetchProductsByLocation = async (location) => {
     router.push(`/product/${product.id}`);
   };
 
-const handleAddToCart = (product, e) => {
-  e.stopPropagation();
-  if (!isAuthenticated) {
-    setShowLoginPrompt(true);
-    return;
-  }
-  
-  if (product.totalStock <= 0) {
-    toast.error("Out of stock!");
-    return;
-  }
-  
-  if (!product.hasVariants || product.variants.length === 0) {
-    // ✅ Log the product to debug
-    console.log("Product being added to cart:", {
-      id: product.id,
-      name: product.name,
-      companyId: product.companyId,
-      warehouseId: product.warehouseId,
-      warehouseName: product.warehouseName
-    });
+  // ✅ Fixed: Handle add to cart with correct IDs
+  const handleAddToCart = (product, e) => {
+    e.stopPropagation();
     
-    // ✅ Make sure companyId is included
-    addToCart({
-      id: product.id,
-      name: product.name,
-      price: product.price,
-      img: product.img,
-      quantity: 1,
-      selectedSize: product.uom || "unit",
-      companyId: product.companyId, // This must exist
-      warehouseId: product.warehouseId,
-      warehouseName: product.warehouseName
-    });
+    if (!isAuthenticated) {
+      setShowLoginPrompt(true);
+      return;
+    }
     
-    setAddedItemName(product.name);
-    setShowCartMessage(true);
-    setTimeout(() => setShowCartMessage(false), 3000);
-  } else {
-    router.push(`/product/${product.id}?action=cart`);
-  }
-};
+    if (product.totalStock <= 0) {
+      toast.error("Out of stock!");
+      return;
+    }
+    
+    if (!product.hasVariants || product.variants.length === 0) {
+      // Get companyId from product or global state
+      let companyId = product.companyId || globalCompanyId;
+      
+      if (!companyId) {
+        console.error("No companyId found for product:", product);
+        toast.error("Unable to add to cart. Please refresh and try again.");
+        return;
+      }
+      
+      console.log("✅ Adding to cart with:");
+      console.log("  - Company ID:", companyId);
+      console.log("  - Warehouse ID:", product.warehouseId);
+      console.log("  - Warehouse Name:", product.warehouseName);
+      
+      addToCart({
+        id: product.id,
+        name: product.name,
+        price: product.price,
+        img: product.img,
+        quantity: 1,
+        selectedSize: product.uom || "unit",
+        companyId: companyId, // ✅ Real company ID
+        warehouseId: product.warehouseId,
+        warehouseName: product.warehouseName
+      });
+      
+      setAddedItemName(product.name);
+      setShowCartMessage(true);
+      setTimeout(() => setShowCartMessage(false), 3000);
+    } else {
+      router.push(`/product/${product.id}?action=cart`);
+    }
+  };
+  
   const handleBuyNow = (product, e) => {
     e.stopPropagation();
     if (!isAuthenticated) {
@@ -285,6 +294,13 @@ const handleAddToCart = (product, e) => {
     }
     
     if (!product.hasVariants || product.variants.length === 0) {
+      let companyId = product.companyId || globalCompanyId;
+      
+      if (!companyId) {
+        toast.error("Unable to proceed. Please refresh and try again.");
+        return;
+      }
+      
       addToCart({
         id: product.id,
         name: product.name,
@@ -292,7 +308,7 @@ const handleAddToCart = (product, e) => {
         img: product.img,
         quantity: 1,
         selectedSize: product.uom || "unit",
-        companyId: product.companyId,
+        companyId: companyId,
         warehouseId: product.warehouseId,
         warehouseName: product.warehouseName
       });
@@ -318,7 +334,7 @@ const handleAddToCart = (product, e) => {
   return (
     <>
       <section className="min-h-screen bg-[#f5f1ea] px-6 py-10 md:px-10">
-        {/* Location Bar - Only show for logged in users */}
+        {/* Location Bar */}
         {isAuthenticated && userLocation && (
           <div className="mb-6 flex items-center justify-between bg-white rounded-xl p-4 shadow-sm">
             <div className="flex items-center gap-2 text-gray-600">
@@ -340,21 +356,17 @@ const handleAddToCart = (product, e) => {
           </div>
         )}
 
-        {/* Nearby Warehouses Section - Only show for logged in users */}
-        {isAuthenticated && nearestWarehouses.length > 0 && (
+        {/* Nearest Warehouse Section */}
+        {isAuthenticated && nearestWarehouse && (
           <div className="mb-6 bg-white rounded-xl p-4 shadow-sm">
             <h3 className="text-sm font-semibold text-gray-700 mb-2">
-              📍 Serving from nearby warehouses:
+              📍 Serving from nearest warehouse:
             </h3>
-            <div className="flex flex-wrap gap-3">
-              {nearestWarehouses.map((wh, idx) => (
-                <div key={idx} className="text-xs bg-gray-100 rounded-lg px-3 py-1.5">
-                  <span className="font-medium">{wh.name}</span>
-                  {wh.distance && (
-                    <span className="text-green-600 ml-1">({wh.distance})</span>
-                  )}
-                </div>
-              ))}
+            <div className="text-xs bg-gray-100 rounded-lg px-3 py-1.5 inline-block">
+              <span className="font-medium">{nearestWarehouse.name}</span>
+              {nearestWarehouse.distance && (
+                <span className="text-green-600 ml-1">({nearestWarehouse.distance})</span>
+              )}
             </div>
           </div>
         )}
@@ -483,7 +495,6 @@ const handleAddToCart = (product, e) => {
                       )}
                     </div>
                     
-                    {/* Stock indicator - only for logged in users */}
                     {isAuthenticated && !isOutOfStock && p.totalStock < 10 && p.totalStock > 0 && (
                       <p className="text-xs text-orange-500 mt-1">
                         Only {p.totalStock} left!
@@ -530,7 +541,7 @@ const handleAddToCart = (product, e) => {
         )}
       </section>
 
-      {/* Location Modal - Only show for logged in users */}
+      {/* Location Modal */}
       {isAuthenticated && showLocationModal && (
         <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 p-4">
           <div className="relative w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">

@@ -15,29 +15,63 @@ const PLACEHOLDER_IMAGE = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/20
 
 export default function BestsellersPage() {
   const { addToCart } = useCart();
-  const { isAuthenticated, userLocation, updateUserLocation } = useAuth();
+  const { isAuthenticated, user, userLocation, updateUserLocation } = useAuth();
   const router = useRouter();
   const [bestsellers, setBestsellers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [nearestWarehouse, setNearestWarehouse] = useState(null);
   const [usingLocation, setUsingLocation] = useState(false);
+  
+  // ✅ Add states for companyId and warehouse
+  const [companyId, setCompanyId] = useState(null);
+  const [warehouseId, setWarehouseId] = useState(null);
+  const [warehouseName, setWarehouseName] = useState(null);
 
   useEffect(() => {
     if (isAuthenticated && userLocation) {
-      // Logged in with location - fetch bestsellers from nearest warehouse
       fetchBestsellersByLocation();
     } else if (isAuthenticated && !userLocation) {
-      // Logged in but no location - try to get location
       handleUpdateLocation();
     } else {
-      // Not logged in - fetch all bestsellers from item master
       fetchAllBestsellers();
     }
   }, [isAuthenticated, userLocation]);
 
+  // ✅ Fetch nearest warehouse to get companyId
+  const fetchNearestWarehouse = async () => {
+    if (!isAuthenticated || !userLocation?.lat) return null;
+    
+    try {
+      const token = localStorage.getItem("token");
+      const res = await axios.get("/api/products/location-based", {
+        params: { 
+          city: userLocation.city || "Unknown", 
+          lat: userLocation.lat, 
+          lng: userLocation.lng 
+        },
+        headers: { Authorization: token ? `Bearer ${token}` : undefined }
+      });
+      
+      if (res.data.success && res.data.nearestWarehouse) {
+        const warehouse = res.data.nearestWarehouse;
+        const whCompanyId = res.data.companyId || warehouse?.companyId;
+        
+        setCompanyId(whCompanyId);
+        setWarehouseId(warehouse?.id);
+        setWarehouseName(warehouse?.name);
+        
+        return whCompanyId;
+      }
+    } catch (error) {
+      console.error("Error fetching warehouse:", error);
+    }
+    return null;
+  };
+
   const handleUpdateLocation = async () => {
     const newLocation = await updateUserLocation();
     if (newLocation) {
+      await fetchNearestWarehouse();
       fetchBestsellersByLocation(newLocation);
     } else {
       fetchAllBestsellers();
@@ -60,6 +94,9 @@ export default function BestsellersPage() {
         await fetchAllBestsellers();
         return;
       }
+      
+      // ✅ Fetch warehouse info first
+      await fetchNearestWarehouse();
       
       // Fetch products from nearest warehouse
       const productsRes = await axios.get("/api/products/location-based", {
@@ -275,6 +312,7 @@ export default function BestsellersPage() {
     }
   };
 
+  // ✅ Fixed: Handle add to cart with companyId
   const handleAddToCart = (item) => {
     if (!isAuthenticated) {
       toast.error("Please login to add to cart");
@@ -283,11 +321,26 @@ export default function BestsellersPage() {
       return;
     }
 
+    // ✅ Check if user is customer
+    if (user?.type !== "customer") {
+      toast.error("Please login with a customer account to add items to cart");
+      const event = new CustomEvent("openAccountModal");
+      window.dispatchEvent(event);
+      return;
+    }
+
+    // ✅ Check for companyId
+    if (!companyId) {
+      toast.error("Location not detected. Please allow location access and try again.");
+      return;
+    }
+
     if (item.hasVariants) {
       router.push(`/product/${item.id}?action=cart`);
       return;
     }
 
+    // ✅ Add to cart with companyId (same as Products page)
     addToCart({
       id: item.id,
       name: item.name,
@@ -296,7 +349,10 @@ export default function BestsellersPage() {
       quantity: 1,
       selectedSize: "unit",
       originalPrice: item.originalPrice,
-      discount: item.discountPercent
+      discount: item.discountPercent,
+      companyId: companyId,        // ✅ CRITICAL: Add companyId
+      warehouseId: warehouseId,
+      warehouseName: warehouseName
     });
     
     toast.success("Added to cart");
@@ -356,7 +412,7 @@ export default function BestsellersPage() {
             Bestsellers
           </h1>
           
-          {/* Location Indicator - Only for logged in users */}
+          {/* Location Indicator */}
           {isAuthenticated && usingLocation && nearestWarehouse && (
             <div className="mb-6 flex items-center justify-center gap-2 bg-white/80 rounded-full px-3 py-1.5 text-sm w-fit mx-auto">
               <FaMapMarkerAlt className="text-[#6c6d2c] text-xs" />
@@ -413,7 +469,15 @@ export default function BestsellersPage() {
           Bestsellers
         </h1>
 
-       
+        {/* Location Indicator */}
+        {isAuthenticated && usingLocation && nearestWarehouse && (
+          <div className="mb-6 flex items-center justify-center gap-2 bg-white/80 rounded-full px-3 py-1.5 text-sm w-fit mx-auto">
+            <FaMapMarkerAlt className="text-[#6c6d2c] text-xs" />
+            <span className="text-gray-600">Serving from:</span>
+            <span className="font-semibold text-[#6c6d2c]">{nearestWarehouse.name}</span>
+            <span className="text-gray-400 text-xs">({nearestWarehouse.distance})</span>
+          </div>
+        )}
 
         {/* Grid */}
         <div className="grid grid-cols-1 gap-8 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
@@ -426,8 +490,6 @@ export default function BestsellersPage() {
                 className="rounded-2xl bg-white p-4 text-center shadow-sm transition hover:shadow-md group cursor-pointer relative"
                 onClick={() => router.push(`/product/${item.id}`)}
               >
-                
-                
                 {/* Image */}
                 <div className="relative h-56 overflow-hidden rounded-xl bg-[#f3e6d3]">
                   <Image
@@ -454,8 +516,6 @@ export default function BestsellersPage() {
                       {item.discountPercent}% OFF
                     </div>
                   )}
-                  
-                  
                 </div>
 
                 {/* Content */}
@@ -509,7 +569,7 @@ export default function BestsellersPage() {
           })}
         </div>
 
-        {/* Refresh Location Button - Only for logged in users */}
+        {/* Refresh Location Button */}
         {isAuthenticated && usingLocation && bestsellers.length > 0 && (
           <div className="mt-10 text-center">
             <button

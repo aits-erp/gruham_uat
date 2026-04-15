@@ -27,7 +27,7 @@ export function AuthProvider({ children }) {
       if (storedLocation) {
         const location = JSON.parse(storedLocation);
         setUserLocation(location);
-        setLocationCaptured(true); // Location already captured
+        setLocationCaptured(true);
       }
     }
     
@@ -101,38 +101,42 @@ export function AuthProvider({ children }) {
     }
   };
 
- const verifyOTP = async (phone, otp, locationData = null) => {
-  try {
-    const res = await axios.post("/api/verify-otp", { phone, otp, location: locationData });
-    
-    if (res.data.success) {
-      const { token, user: userData } = res.data;
+  // ✅ FIXED: Added userType parameter to create customer/company accounts
+  const verifyOTP = async (phone, otp, locationData = null, userType = "customer") => {
+    try {
+      const res = await axios.post("/api/verify-otp", { 
+        phone, 
+        otp, 
+        location: locationData,
+        userType: userType  // Pass userType to API
+      });
       
-      localStorage.setItem("token", token);
-      localStorage.setItem("user", JSON.stringify(userData));
-      
-      if (locationData) {
-        localStorage.setItem("userLocation", JSON.stringify(locationData));
+      if (res.data.success) {
+        const { token, user: userData } = res.data;
+        
+        localStorage.setItem("token", token);
+        localStorage.setItem("user", JSON.stringify(userData));
+        
+        if (locationData) {
+          localStorage.setItem("userLocation", JSON.stringify(locationData));
+        }
+        
+        axios.defaults.headers.common["Authorization"] = `Bearer ${token}`;
+        
+        setUser(userData);
+        if (locationData) setUserLocation(locationData);
+        
+        toast.success(`Welcome ${userData.name || userData.phone}!`);
+        return true;
       }
-      
-      axios.defaults.headers.common["Authorization"] = `Bearer ${token}`;
-      
-      setUser(userData);
-      setIsAuthenticated(true);
-      if (locationData) setUserLocation(locationData);
-      
-      toast.success(`Welcome ${userData.name || userData.phone}!`);
-      return true;
+      return false;
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Invalid OTP");
+      return false;
     }
-    return false;
-  } catch (error) {
-    toast.error(error.response?.data?.message || "Invalid OTP");
-    return false;
-  }
-};
+  };
 
   const updateUserLocation = async () => {
-    // Only capture if user explicitly requests it
     try {
       const location = await captureLocation();
       setUserLocation(location);
@@ -157,14 +161,9 @@ export function AuthProvider({ children }) {
   const logout = () => {
     localStorage.removeItem("token");
     localStorage.removeItem("user");
-    // Don't remove location on logout - keep for next session
-    // localStorage.removeItem("userLocation");
     
     delete axios.defaults.headers.common["Authorization"];
     setUser(null);
-    // Don't clear location on logout
-    // setUserLocation(null);
-    // setLocationCaptured(false);
     
     localStorage.removeItem("cart");
     const event = new CustomEvent("cartCleared");
@@ -184,7 +183,7 @@ export function AuthProvider({ children }) {
         logout,
         updateUserLocation,
         isAuthenticated: !!user,
-        locationCaptured, // Optional: expose if needed
+        locationCaptured,
       }}
     >
       {children}

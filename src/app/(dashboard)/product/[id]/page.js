@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Image from "next/image";
 import Link from "next/link";
-import { FaHeart, FaArrowLeft, FaShoppingCart, FaBolt, FaCheckCircle } from "react-icons/fa";
+import { FaHeart, FaArrowLeft, FaShoppingCart, FaBolt, FaCheckCircle, FaMapMarkerAlt } from "react-icons/fa";
 import { useCart } from "../../context/CartContext";
 import { useWishlist } from "../../context/WishlistContext";
 import { useAuth } from "../../context/AuthContext";
@@ -19,7 +19,7 @@ export default function ProductDetailPage() {
   const searchParams = useSearchParams();
   const { addToCart } = useCart();
   const { toggleWishlist, isInWishlist } = useWishlist();
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, user, userLocation, updateUserLocation } = useAuth();
 
   const [product, setProduct] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -28,12 +28,71 @@ export default function ProductDetailPage() {
   const [showLoginPrompt, setShowLoginPrompt] = useState(false);
   const [showCartMessage, setShowCartMessage] = useState(false);
   const [addedItemName, setAddedItemName] = useState("");
+  
+  // ✅ Add states for companyId and warehouse (same as Products page)
+  const [companyId, setCompanyId] = useState(null);
+  const [warehouseId, setWarehouseId] = useState(null);
+  const [warehouseName, setWarehouseName] = useState(null);
+  const [nearestWarehouse, setNearestWarehouse] = useState(null);
+  const [fetchingWarehouse, setFetchingWarehouse] = useState(false);
 
+  // ✅ Fetch nearest warehouse (same as Products page)
+  const fetchNearestWarehouse = async () => {
+    if (!isAuthenticated || !userLocation?.lat) {
+      console.log("Cannot fetch warehouse: not authenticated or no location");
+      return null;
+    }
+    
+    setFetchingWarehouse(true);
+    
+    try {
+      const token = localStorage.getItem("token");
+      const res = await axios.get("/api/products/location-based", {
+        params: { 
+          city: userLocation.city || "Unknown", 
+          lat: userLocation.lat, 
+          lng: userLocation.lng 
+        },
+        headers: { Authorization: token ? `Bearer ${token}` : undefined }
+      });
+      
+      if (res.data.success && res.data.nearestWarehouse) {
+        const warehouse = res.data.nearestWarehouse;
+        const whCompanyId = res.data.companyId || warehouse?.companyId;
+        const whId = warehouse?.id;
+        const whName = warehouse?.name;
+        
+        if (whCompanyId) {
+          setCompanyId(whCompanyId);
+          setWarehouseId(whId);
+          setWarehouseName(whName);
+          setNearestWarehouse(warehouse);
+          console.log("✅ CompanyId from warehouse API:", whCompanyId);
+          console.log("✅ Warehouse ID:", whId);
+          return whCompanyId;
+        }
+      }
+    } catch (error) {
+      console.error("Error fetching warehouse:", error);
+    } finally {
+      setFetchingWarehouse(false);
+    }
+    return null;
+  };
+
+  // ✅ Fetch product details
   useEffect(() => {
     if (params.id) {
       fetchProduct();
     }
   }, [params.id]);
+
+  // ✅ Fetch warehouse when authenticated and location available (same as Products page)
+  useEffect(() => {
+    if (isAuthenticated && userLocation?.lat) {
+      fetchNearestWarehouse();
+    }
+  }, [isAuthenticated, userLocation]);
 
   const fetchProduct = async () => {
     setLoading(true);
@@ -119,9 +178,24 @@ export default function ProductDetailPage() {
     return "Variant";
   };
 
+  // ✅ Fixed: Handle add to cart with companyId (same pattern as Products page)
   const handleAddToCart = () => {
     if (!isAuthenticated) {
       setShowLoginPrompt(true);
+      return;
+    }
+
+    // ✅ Check if user is customer
+    if (user?.type !== "customer") {
+      toast.error("Please login with a customer account to add items to cart");
+      setShowLoginPrompt(true);
+      return;
+    }
+
+    // ✅ Check for companyId (same as Products page)
+    if (!companyId) {
+      console.error("Missing companyId. Cannot add to cart.");
+      toast.error("Location not detected. Please allow location access and try again.");
       return;
     }
 
@@ -137,6 +211,14 @@ export default function ProductDetailPage() {
       itemName = product.name;
     }
 
+    console.log("✅ Adding to cart with:");
+    console.log("  - Company ID:", companyId);
+    console.log("  - Warehouse ID:", warehouseId);
+    console.log("  - Product:", itemName);
+    console.log("  - Price:", finalPrice);
+    console.log("  - Quantity:", quantity);
+
+    // ✅ Add to cart with all required fields (same as Products page)
     addToCart({
       id: product.id,
       name: product.name,
@@ -148,10 +230,13 @@ export default function ProductDetailPage() {
       variantName: selectedVariant?.name,
       discount: selectedVariant?.discount || 0,
       originalPrice: selectedVariant?.price || product.price,
-      quantityPerUnit: selectedVariant?.quantity
+      quantityPerUnit: selectedVariant?.quantity,
+      companyId: companyId,        // ✅ CRITICAL: Same as Products page
+      warehouseId: warehouseId,    // ✅ CRITICAL: Same as Products page
+      warehouseName: warehouseName  // ✅ CRITICAL: Same as Products page
     });
 
-    // Show success message on the same page
+    // Show success message
     setAddedItemName(itemName);
     setShowCartMessage(true);
     
@@ -159,6 +244,39 @@ export default function ProductDetailPage() {
     setTimeout(() => {
       setShowCartMessage(false);
     }, 3000);
+  };
+
+  const handleBuyNow = () => {
+    if (!isAuthenticated) {
+      setShowLoginPrompt(true);
+      return;
+    }
+
+    // ✅ Check if user is customer
+    if (user?.type !== "customer") {
+      toast.error("Please login with a customer account to place orders");
+      setShowLoginPrompt(true);
+      return;
+    }
+
+    // ✅ Check for companyId
+    if (!companyId) {
+      toast.error("Location not detected. Please allow location access and try again.");
+      return;
+    }
+
+    handleAddToCart();
+    setTimeout(() => {
+      router.push("/checkout");
+    }, 500);
+  };
+
+  const handleUpdateLocation = async () => {
+    const newLocation = await updateUserLocation();
+    if (newLocation) {
+      await fetchNearestWarehouse();
+      toast.success("Location updated!");
+    }
   };
 
   const openLoginModal = () => {
@@ -234,7 +352,33 @@ export default function ProductDetailPage() {
             <FaArrowLeft /> Back
           </button>
 
-          {/* Success Message */}
+          {/* Location Bar - Same as Products page */}
+          {isAuthenticated && (
+            <div className="mb-6 flex items-center justify-between bg-white rounded-xl p-4 shadow-sm">
+              <div className="flex items-center gap-2 text-gray-600">
+                <FaMapMarkerAlt className="text-[#5c5f2a]" />
+                <span className="text-sm">Delivering to:</span>
+                {userLocation ? (
+                  <span className="font-semibold text-gray-800">{userLocation.city}</span>
+                ) : (
+                  <span className="text-sm text-gray-500">Location not detected</span>
+                )}
+                {warehouseName && (
+                  <span className="text-xs text-green-600 ml-2">
+                    (From: {warehouseName})
+                  </span>
+                )}
+              </div>
+              <button
+                onClick={handleUpdateLocation}
+                className="text-sm text-[#5c5f2a] hover:underline"
+              >
+                Change Location
+              </button>
+            </div>
+          )}
+
+          {/* Success Message Toast - Same as Products page */}
           {showCartMessage && (
             <div className="fixed top-20 right-4 z-50 animate-in slide-in-from-right duration-300">
               <div className="bg-green-500 text-white px-6 py-4 rounded-xl shadow-lg flex items-center gap-3">
@@ -405,26 +549,34 @@ export default function ProductDetailPage() {
                 <div className="mt-6 flex gap-3">
                   <button
                     onClick={handleAddToCart}
-                    className="flex-1 bg-[#5c5f2a] text-white py-3 rounded-full font-semibold hover:bg-[#4a4d20] transition flex items-center justify-center gap-2"
+                    disabled={fetchingWarehouse || !companyId}
+                    className="flex-1 bg-[#5c5f2a] text-white py-3 rounded-full font-semibold hover:bg-[#4a4d20] transition flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    <FaShoppingCart /> Add to Cart
+                    {fetchingWarehouse ? "Detecting location..." : <><FaShoppingCart /> Add to Cart</>}
                   </button>
                   <button
-                    onClick={() => {
-                      if (!isAuthenticated) {
-                        setShowLoginPrompt(true);
-                        return;
-                      }
-                      handleAddToCart();
-                      setTimeout(() => {
-                        router.push("/checkout");
-                      }, 500);
-                    }}
-                    className="flex-1 border-2 border-[#5c5f2a] text-[#5c5f2a] py-3 rounded-full font-semibold hover:bg-[#5c5f2a] hover:text-white transition flex items-center justify-center gap-2"
+                    onClick={handleBuyNow}
+                    disabled={fetchingWarehouse || !companyId}
+                    className="flex-1 border-2 border-[#5c5f2a] text-[#5c5f2a] py-3 rounded-full font-semibold hover:bg-[#5c5f2a] hover:text-white transition flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    <FaBolt /> Buy Now
+                    {fetchingWarehouse ? "Loading..." : <><FaBolt /> Buy Now</>}
                   </button>
                 </div>
+
+                {/* Warning if location not detected - Same as Products page */}
+                {isAuthenticated && !companyId && !fetchingWarehouse && (
+                  <div className="mt-4 p-3 bg-yellow-50 rounded-lg border border-yellow-200">
+                    <p className="text-xs text-yellow-800 text-center">
+                      ⚠️ Location not detected. Please allow location access to add items to cart.
+                    </p>
+                    <button
+                      onClick={handleUpdateLocation}
+                      className="mt-2 text-xs text-[#5c5f2a] font-medium hover:underline w-full text-center"
+                    >
+                      Enable Location
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -443,7 +595,7 @@ export default function ProductDetailPage() {
               </div>
               <h3 className="text-xl font-bold text-gray-900 mb-2">Login Required</h3>
               <p className="text-gray-600 mb-6">
-                Please login to add items to your cart and continue shopping.
+                Please login with a customer account to add items to cart.
               </p>
               <div className="flex gap-3">
                 <button

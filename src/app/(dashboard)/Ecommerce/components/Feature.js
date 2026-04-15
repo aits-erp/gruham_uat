@@ -17,7 +17,7 @@ const PLACEHOLDER_IMAGE = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/20
 export default function FeaturedCollection({ layout = "left-image" }) {
   const { addToCart } = useCart();
   const { wishlistItems, toggleWishlist, isInWishlist } = useWishlist();
-  const { isAuthenticated, userLocation, updateUserLocation } = useAuth();
+  const { isAuthenticated, user, userLocation, updateUserLocation } = useAuth();
   const router = useRouter();
   const [leftImage, setLeftImage] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -26,10 +26,15 @@ export default function FeaturedCollection({ layout = "left-image" }) {
   const [bestsellerProducts, setBestsellerProducts] = useState([]);
   const [displayProducts, setDisplayProducts] = useState([]);
   const [productsLoading, setProductsLoading] = useState(true);
-  const [openSizeSelector, setOpenSizeSelector] = useState(null);
-  const [selectedSizes, setSelectedSizes] = useState({});
+  const [openVariantSelector, setOpenVariantSelector] = useState(null);
+  const [selectedVariants, setSelectedVariants] = useState({});
   const [nearestWarehouse, setNearestWarehouse] = useState(null);
   const [usingLocation, setUsingLocation] = useState(false);
+  
+  // ✅ Add states for companyId and warehouse
+  const [companyId, setCompanyId] = useState(null);
+  const [warehouseId, setWarehouseId] = useState(null);
+  const [warehouseName, setWarehouseName] = useState(null);
 
   // Fetch left image from API
   useEffect(() => {
@@ -45,25 +50,106 @@ export default function FeaturedCollection({ layout = "left-image" }) {
     fetchLeftImage();
   }, []);
 
+  // ✅ Fetch nearest warehouse to get companyId
+  const fetchNearestWarehouse = async () => {
+    if (!isAuthenticated || !userLocation?.lat) return null;
+    
+    try {
+      const token = localStorage.getItem("token");
+      const res = await axios.get("/api/products/location-based", {
+        params: { 
+          city: userLocation.city || "Unknown", 
+          lat: userLocation.lat, 
+          lng: userLocation.lng 
+        },
+        headers: { Authorization: token ? `Bearer ${token}` : undefined }
+      });
+      
+      if (res.data.success && res.data.nearestWarehouse) {
+        const warehouse = res.data.nearestWarehouse;
+        const whCompanyId = res.data.companyId || warehouse?.companyId;
+        
+        setCompanyId(whCompanyId);
+        setWarehouseId(warehouse?.id);
+        setWarehouseName(warehouse?.name);
+        
+        return whCompanyId;
+      }
+    } catch (error) {
+      console.error("Error fetching warehouse:", error);
+    }
+    return null;
+  };
+
   // Fetch products based on authentication status
   useEffect(() => {
     if (isAuthenticated && userLocation) {
       fetchProductsByLocation();
     } else if (isAuthenticated && !userLocation) {
-      // Don't automatically ask for location, just fetch all products
       fetchAllProducts();
     } else {
       fetchAllProducts();
     }
   }, [isAuthenticated, userLocation]);
 
+  // ✅ Fetch warehouse when authenticated
+  useEffect(() => {
+    if (isAuthenticated && userLocation?.lat) {
+      fetchNearestWarehouse();
+    }
+  }, [isAuthenticated, userLocation]);
+
   const handleUpdateLocation = async () => {
     const newLocation = await updateUserLocation();
     if (newLocation) {
+      await fetchNearestWarehouse();
       fetchProductsByLocation(newLocation);
     } else {
       fetchAllProducts();
     }
+  };
+
+  // Helper function to get discounted price
+  const getDiscountedPrice = (price, discount) => {
+    if (discount && discount > 0) {
+      return price * (1 - discount / 100);
+    }
+    return price;
+  };
+
+  // Get variant display name
+  const getVariantDisplayName = (variant) => {
+    if (variant.name) return variant.name;
+    if (variant.quantity) {
+      const uom = variant.uom || "unit";
+      if (uom === "KG") {
+        return variant.quantity >= 1000 
+          ? `${variant.quantity/1000}kg` 
+          : `${variant.quantity}gm`;
+      }
+      if (uom === "LTR") {
+        return variant.quantity >= 1000 
+          ? `${variant.quantity/1000}L` 
+          : `${variant.quantity}ml`;
+      }
+      return `${variant.quantity} ${uom}`;
+    }
+    return "Variant";
+  };
+
+  // Get product display price (with variants)
+  const getProductDisplayPrice = (product) => {
+    if (product.hasVariants && product.variants.length > 0) {
+      const prices = product.variants.map(v => getDiscountedPrice(v.price, v.discount));
+      const minPrice = Math.min(...prices);
+      const maxPrice = Math.max(...prices);
+      
+      if (minPrice === maxPrice) {
+        return `₹${minPrice.toFixed(2)}`;
+      }
+      return `₹${minPrice.toFixed(2)} - ₹${maxPrice.toFixed(2)}`;
+    }
+    return `₹${product.price.toFixed(2)}`;
   };
 
   const fetchProductsByLocation = async (location = userLocation) => {
@@ -98,13 +184,12 @@ export default function FeaturedCollection({ layout = "left-image" }) {
           name: item.itemName,
           price: item.unitPrice,
           image: item.imageUrl || PLACEHOLDER_IMAGE,
-          sizes: getSizesFromUOM(item.uom),
+          variants: item.enableVariants ? (item.variants || []) : [],
+          hasVariants: item.enableVariants && (item.variants?.length > 0),
           description: item.description,
           category: item.category,
           itemType: item.itemType,
           orderCount: 0,
-          hasVariants: item.enableVariants && (item.variants?.length > 0),
-          variants: item.enableVariants ? (item.variants || []) : [],
           uom: item.uom,
           totalStock: item.totalStock,
           warehouse: item.warehouse,
@@ -187,13 +272,12 @@ export default function FeaturedCollection({ layout = "left-image" }) {
           name: item.itemName,
           price: item.unitPrice,
           image: item.imageUrl || PLACEHOLDER_IMAGE,
-          sizes: getSizesFromUOM(item.uom),
+          variants: item.enableVariants ? (item.variants || []) : [],
+          hasVariants: item.enableVariants && (item.variants?.length > 0),
           description: item.description,
           category: item.category,
           itemType: item.itemType,
           orderCount: productOrderCount[item._id] || 0,
-          hasVariants: item.enableVariants && (item.variants?.length > 0),
-          variants: item.enableVariants ? (item.variants || []) : [],
           uom: item.uom
         }));
         
@@ -249,40 +333,34 @@ export default function FeaturedCollection({ layout = "left-image" }) {
     }
   }, [wishlistItems, allProducts, isAuthenticated]);
 
-  const getSizesFromUOM = (uom) => {
-    const sizeMap = {
-      "KG": ["250gm", "500gm", "1kg", "2kg"],
-      "MTP": ["1kg", "5kg", "10kg", "25kg"],
-      "PC": ["1pc", "2pc", "5pc", "10pc"],
-      "LTR": ["250ml", "500ml", "1L", "2L"],
-      "MTR": ["1m", "2m", "5m", "10m"]
-    };
-    return sizeMap[uom] || ["250gm", "500gm", "1kg"];
-  };
-
   const handleProductClick = (productId) => {
     router.push(`/product/${productId}`);
   };
 
-  const handleOpenSizes = (productId, e) => {
+  const handleOpenVariants = (productId, e) => {
     e.stopPropagation();
-    setOpenSizeSelector(productId);
+    setOpenVariantSelector(productId);
     const product = allProducts.find((p) => p.id === productId);
-    setSelectedSizes((prev) => ({
-      ...prev,
-      [productId]: prev[productId] || product?.sizes[0],
-    }));
+    if (product && product.hasVariants && product.variants.length > 0) {
+      if (!selectedVariants[productId]) {
+        setSelectedVariants((prev) => ({
+          ...prev,
+          [productId]: product.variants[0],
+        }));
+      }
+    }
   };
 
-  const handleSizeSelect = (productId, size, e) => {
+  const handleVariantSelect = (productId, variant, e) => {
     e.stopPropagation();
-    setSelectedSizes((prev) => ({
+    setSelectedVariants((prev) => ({
       ...prev,
-      [productId]: size,
+      [productId]: variant,
     }));
   };
 
-  const handleConfirmAddToCart = (product, e) => {
+  // ✅ Fixed: Handle add to cart with companyId
+  const handleAddToCart = (product, e) => {
     e.stopPropagation();
     if (!isAuthenticated) {
       toast.error("Please login to add to cart");
@@ -291,19 +369,74 @@ export default function FeaturedCollection({ layout = "left-image" }) {
       return;
     }
 
-    const finalSize = selectedSizes[product.id] || product.sizes[0];
+    // ✅ Check if user is customer
+    if (user?.type !== "customer") {
+      toast.error("Please login with a customer account to add items to cart");
+      const event = new CustomEvent("openAccountModal");
+      window.dispatchEvent(event);
+      return;
+    }
 
+    // ✅ Check for companyId
+    if (!companyId) {
+      toast.error("Location not detected. Please allow location access and try again.");
+      return;
+    }
+
+    if (product.hasVariants) {
+      if (!selectedVariants[product.id]) {
+        toast.error("Please select a variant");
+        return;
+      }
+      handleConfirmAddToCart(product, e);
+    } else {
+      // ✅ No variants, add directly with companyId
+      addToCart({
+        id: product.id,
+        name: product.name,
+        price: product.price,
+        img: product.image,
+        quantity: 1,
+        companyId: companyId,        // ✅ Add companyId
+        warehouseId: warehouseId,
+        warehouseName: warehouseName
+      });
+      toast.success(`${product.name} added to cart`);
+      router.push("/cart");
+    }
+  };
+
+  const handleConfirmAddToCart = (product, e) => {
+    e.stopPropagation();
+    const selectedVariant = selectedVariants[product.id];
+    
+    if (!selectedVariant) {
+      toast.error("Please select a variant");
+      return;
+    }
+
+    const finalPrice = getDiscountedPrice(selectedVariant.price, selectedVariant.discount);
+    const finalName = `${product.name} - ${getVariantDisplayName(selectedVariant)}`;
+
+    // ✅ Add to cart with companyId for variants
     addToCart({
       id: product.id,
-      name: product.name,
-      price: product.price,
+      name: finalName,
+      price: finalPrice,
+      originalPrice: selectedVariant.price,
       img: product.image,
       quantity: 1,
-      selectedSize: finalSize,
+      variantId: selectedVariant._id,
+      variantName: getVariantDisplayName(selectedVariant),
+      variantQuantity: selectedVariant.quantity,
+      uom: product.uom,
+      companyId: companyId,        // ✅ Add companyId
+      warehouseId: warehouseId,
+      warehouseName: warehouseName
     });
 
-    setOpenSizeSelector(null);
-    toast.success("Added to cart");
+    setOpenVariantSelector(null);
+    toast.success(`${finalName} added to cart`);
     router.push("/cart");
   };
 
@@ -328,8 +461,10 @@ export default function FeaturedCollection({ layout = "left-image" }) {
 
   const ProductCard = ({ product, isBestseller = false, rank = null }) => {
     const isFav = isInWishlist(product.id);
-    const isOpen = openSizeSelector === product.id;
-    const activeSize = selectedSizes[product.id] || product.sizes[0];
+    const isOpen = openVariantSelector === product.id;
+    const selectedVariant = selectedVariants[product.id];
+    const displayPrice = getProductDisplayPrice(product);
+    const hasVariants = product.hasVariants && product.variants.length > 0;
 
     return (
       <div 
@@ -384,33 +519,55 @@ export default function FeaturedCollection({ layout = "left-image" }) {
             {product.name}
           </h3>
           
-          <p className="mt-1 text-[17px] font-semibold text-[#6c6d2c]">₹{product.price}</p>
+          <p className="mt-1 text-[17px] font-semibold text-[#6c6d2c]">{displayPrice}</p>
+          
+          {hasVariants && (
+            <p className="text-xs text-gray-500 mt-0.5">
+              {product.variants.length} variants available
+            </p>
+          )}
 
           <div className="mt-4">
             {!isOpen ? (
               <button
                 type="button"
-                onClick={(e) => handleOpenSizes(product.id, e)}
+                onClick={(e) => hasVariants ? handleOpenVariants(product.id, e) : handleAddToCart(product, e)}
                 className="flex h-[40px] w-full items-center justify-center rounded-full bg-[#6c6d2c] text-sm font-semibold text-white transition hover:bg-[#5c5d24]"
               >
-                Add to Cart
+                {hasVariants ? "Select Variant" : "Add to Cart"}
               </button>
             ) : (
               <div className="rounded-[16px] border border-[#ddd3c3] bg-[#faf7f2] p-3">
-                <p className="mb-3 text-sm font-semibold text-[#333]">Select size</p>
-                <div className="flex flex-wrap justify-center gap-2">
-                  {product.sizes.map((size) => {
-                    const isSelected = activeSize === size;
+                <p className="mb-3 text-sm font-semibold text-[#333]">
+                  Select {product.itemType === "Service" ? "Service" : "Variant"}
+                </p>
+                <div className="flex flex-wrap justify-center gap-2 max-h-32 overflow-y-auto">
+                  {product.variants.map((variant, idx) => {
+                    const isSelected = selectedVariant?._id === variant._id;
+                    const variantPrice = getDiscountedPrice(variant.price, variant.discount);
+                    const variantName = getVariantDisplayName(variant);
+                    const hasDiscount = variant.discount > 0;
+
                     return (
                       <button
-                        key={size}
+                        key={idx}
                         type="button"
-                        onClick={(e) => handleSizeSelect(product.id, size, e)}
+                        onClick={(e) => handleVariantSelect(product.id, variant, e)}
                         className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
-                          isSelected ? "bg-[#6c6d2c] text-white" : "border border-[#d8d1c4] bg-white text-[#333]"
+                          isSelected 
+                            ? "bg-[#6c6d2c] text-white" 
+                            : "border border-[#d8d1c4] bg-white text-[#333] hover:border-[#6c6d2c]"
                         }`}
                       >
-                        {size}
+                        <div className="flex flex-col items-center">
+                          <span>{variantName}</span>
+                          <span className={`text-[10px] ${isSelected ? "text-white/80" : "text-gray-500"}`}>
+                            ₹{variantPrice.toFixed(2)}
+                            {hasDiscount && (
+                              <span className="line-through ml-1">₹{variant.price}</span>
+                            )}
+                          </span>
+                        </div>
                       </button>
                     );
                   })}
@@ -420,7 +577,7 @@ export default function FeaturedCollection({ layout = "left-image" }) {
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      setOpenSizeSelector(null);
+                      setOpenVariantSelector(null);
                     }}
                     className="w-1/2 rounded-full border border-[#d8d1c4] bg-white px-3 py-2 text-xs font-medium text-[#333] transition hover:bg-[#f3efe8]"
                   >
@@ -428,10 +585,10 @@ export default function FeaturedCollection({ layout = "left-image" }) {
                   </button>
                   <button
                     type="button"
-                    onClick={(e) => handleConfirmAddToCart(product, e)}
+                    onClick={(e) => handleAddToCart(product, e)}
                     className="w-1/2 rounded-full bg-[#6c6d2c] px-3 py-2 text-xs font-semibold text-white transition hover:bg-[#5c5d24]"
                   >
-                    Confirm
+                    Add to Cart
                   </button>
                 </div>
               </div>

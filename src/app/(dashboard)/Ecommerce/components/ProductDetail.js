@@ -49,6 +49,7 @@ export default function ProductDetail({ productId, onClose }) {
             category: foundProduct.category,
             itemType: foundProduct.itemType,
             uom: foundProduct.uom
+            
           };
           setProduct(productData);
           if (productData.hasVariants && productData.variants.length > 0) {

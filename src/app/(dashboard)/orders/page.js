@@ -1,3 +1,4 @@
+// app/(dashboard)/orders/page.js
 "use client";
 
 import { useState, useEffect } from "react";
@@ -22,12 +23,29 @@ export default function OrdersPage() {
       return;
     }
     
+    // Check if user is customer
+    if (user && user.type !== "customer") {
+      toast.error("Please login with a customer account to view orders");
+      const event = new CustomEvent("openAccountModal");
+      window.dispatchEvent(event);
+      router.push("/");
+      return;
+    }
+    
     fetchOrders();
-  }, [isAuthenticated, router]);
+  }, [isAuthenticated, router, user]);
 
   const fetchOrders = async () => {
+    setLoading(true);
     try {
       const token = localStorage.getItem("token");
+      
+      if (!token) {
+        toast.error("Please login to view your orders");
+        router.push("/");
+        return;
+      }
+      
       const response = await fetch("/api/orders", {
         headers: {
           Authorization: `Bearer ${token}`,
@@ -35,10 +53,56 @@ export default function OrdersPage() {
       });
 
       const data = await response.json();
-      console.log("Orders response:", data);
+      console.log("Orders response:", { status: response.status, data });
+
+      if (response.status === 401) {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        toast.error("Session expired. Please login again.");
+        router.push("/");
+        return;
+      }
+      
+      if (response.status === 403) {
+        toast.error(data.message || "Please login with a customer account");
+        const event = new CustomEvent("openAccountModal");
+        window.dispatchEvent(event);
+        return;
+      }
 
       if (data.success) {
-        setOrders(data.data || []);
+        const ordersData = data.data || [];
+        
+        const transformedOrders = ordersData.map(order => ({
+          _id: order._id,
+          orderNumber: order.documentNumberOrder || order.orderNumber || order._id,
+          orderDate: order.orderDate || order.createdAt,
+          total: order.grandTotal || order.total || 0,
+          orderStatus: order.status || order.orderStatus || "pending",
+          paymentMethod: order.paymentMethod || "cod",
+          paymentStatus: order.paymentStatus || "pending",
+          trackingNumber: order.trackingNumber || null,
+          warehouse: order.nearestWarehouse || order.warehouse || null,
+          customerAddress: {
+            fullName: order.customerName || order.shippingAddress?.fullName || "",
+            address: order.shippingAddress?.address1 || order.customerAddress?.address || "",
+            city: order.shippingAddress?.city || order.customerAddress?.city || "",
+            state: order.shippingAddress?.state || order.customerAddress?.state || "",
+            pincode: order.shippingAddress?.zip || order.customerAddress?.pincode || "",
+            phone: order.customerPhone || order.contactPerson || ""
+          },
+          items: (order.items || []).map(item => ({
+            id: item.item?._id || item.item || item.id,
+            name: item.itemName || item.name,
+            price: item.unitPrice || item.price || 0,
+            quantity: item.quantity || 0,
+            selectedSize: item.selectedSize || item.uom || "unit",
+            image: item.image || item.img || null,
+            total: item.totalAmount || (item.unitPrice * item.quantity) || (item.price * item.quantity) || 0
+          }))
+        }));
+        
+        setOrders(transformedOrders);
       } else {
         toast.error(data.message || "Failed to fetch orders");
       }
@@ -65,7 +129,6 @@ export default function OrdersPage() {
       case "delivered": return "bg-green-100 text-green-800";
       case "cancelled": return "bg-red-100 text-red-800";
       case "returned": return "bg-gray-100 text-gray-800";
-      case "open": return "bg-blue-100 text-blue-800";
       default: return "bg-gray-100 text-gray-800";
     }
   };
@@ -80,19 +143,23 @@ export default function OrdersPage() {
       delivered: "Delivered",
       cancelled: "Cancelled",
       returned: "Returned",
-      open: "Processing",
     };
     return statusMap[status?.toLowerCase()] || status || "Pending";
   };
 
   const formatDate = (dateString) => {
     if (!dateString) return "N/A";
-    const date = new Date(dateString);
-    return date.toLocaleDateString("en-IN", {
-      day: "numeric",
-      month: "long",
-      year: "numeric",
-    });
+    try {
+      const date = new Date(dateString);
+      if (isNaN(date.getTime())) return "N/A";
+      return date.toLocaleDateString("en-IN", {
+        day: "numeric",
+        month: "long",
+        year: "numeric",
+      });
+    } catch (e) {
+      return "N/A";
+    }
   };
 
   const toggleExpand = (orderId) => {
@@ -115,7 +182,6 @@ export default function OrdersPage() {
   return (
     <section className="min-h-screen bg-[#f8f8f8] px-6 py-10 md:px-10">
       <div className="mx-auto max-w-6xl">
-        {/* Location Indicator */}
         {isAuthenticated && userLocation && (
           <div className="mb-4 flex items-center justify-end gap-2 bg-white/80 rounded-full px-3 py-1.5 text-sm w-fit ml-auto shadow-sm">
             <FaMapMarkerAlt className="text-[#6c6d2c] text-xs" />
@@ -151,7 +217,6 @@ export default function OrdersPage() {
           <div className="space-y-6">
             {orders.map((order) => (
               <div key={order._id} className="rounded-2xl bg-white shadow-lg overflow-hidden hover:shadow-xl transition-shadow">
-                {/* Order Header */}
                 <div className="border-b border-gray-100 bg-gradient-to-r from-gray-50 to-white px-6 py-4">
                   <div className="flex flex-wrap items-center justify-between gap-4">
                     <div className="flex items-center gap-4">
@@ -189,46 +254,21 @@ export default function OrdersPage() {
                   </div>
                 </div>
 
-                {/* Order Items (Always visible summary) */}
-                <div className="px-6 py-4">
-                  <div className="flex items-center gap-3">
-                    <div className="flex -space-x-2">
-                      {order.items?.slice(0, 3).map((item, idx) => (
-                        <div key={idx} className="relative h-10 w-10 rounded-full bg-gray-100 border-2 border-white overflow-hidden">
-                          {item.image ? (
-                            <Image src={item.image} alt={item.name} fill className="object-cover" />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center bg-gray-200">
-                              <span className="text-gray-500 text-xs">📦</span>
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                    <div>
-                      <p className="text-sm text-gray-600">
-                        {order.items?.length} item{order.items?.length !== 1 ? 's' : ''}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Expanded Details */}
                 {expandedOrder === order._id && (
                   <div className="border-t border-gray-100 bg-gray-50">
-                    {/* Order Items Details */}
                     <div className="px-6 py-4">
                       <h3 className="font-semibold text-gray-900 mb-3">Items Details</h3>
                       <div className="space-y-3">
-                        {order.items?.map((item, idx) => (
+                        {(order.items || []).map((item, idx) => (
                           <div key={idx} className="flex items-center gap-4 py-3 border-b border-gray-200 last:border-0">
                             <div className="relative h-16 w-16 overflow-hidden rounded-lg bg-gray-100 flex-shrink-0">
                               {item.image ? (
                                 <Image
                                   src={item.image}
-                                  alt={item.name}
+                                  alt={item.name || "Product"}
                                   fill
                                   className="object-cover"
+                                  onError={(e) => { e.target.style.display = 'none'; }}
                                 />
                               ) : (
                                 <div className="w-full h-full flex items-center justify-center">
@@ -237,8 +277,8 @@ export default function OrdersPage() {
                               )}
                             </div>
                             <div className="flex-1">
-                              <p className="font-semibold text-gray-900">{item.name}</p>
-                              <p className="text-sm text-gray-500">Size: {item.selectedSize}</p>
+                              <p className="font-semibold text-gray-900">{item.name || "Product"}</p>
+                              <p className="text-sm text-gray-500">Size: {item.selectedSize || "Standard"}</p>
                               <p className="text-sm text-gray-500">Qty: {item.quantity}</p>
                             </div>
                             <div className="text-right">
@@ -247,8 +287,7 @@ export default function OrdersPage() {
                                 {item.total?.toLocaleString() || (item.price * item.quantity).toLocaleString()}
                               </p>
                               <p className="text-xs text-gray-500">
-                                <FaRupeeSign className="text-xs inline mr-0.5" />
-                                {item.price} each
+                                ₹{item.price} each
                               </p>
                             </div>
                           </div>
@@ -256,7 +295,6 @@ export default function OrdersPage() {
                       </div>
                     </div>
 
-                    {/* Warehouse Info */}
                     {order.warehouse && (
                       <div className="border-t border-gray-100 bg-blue-50 px-6 py-3">
                         <div className="flex items-center gap-2">
@@ -269,79 +307,6 @@ export default function OrdersPage() {
                         </div>
                       </div>
                     )}
-
-                    {/* Shipping Address */}
-                    {order.customerAddress && (
-                      <div className="border-t border-gray-100 bg-white px-6 py-4">
-                        <h3 className="font-semibold text-gray-900 mb-2">Shipping Address</h3>
-                        <div className="text-sm text-gray-600">
-                          <p>{order.customerAddress.fullName}</p>
-                          <p>{order.customerAddress.address}</p>
-                          <p>{order.customerAddress.city}, {order.customerAddress.state} - {order.customerAddress.pincode}</p>
-                          <p>Phone: {order.customerAddress.phone}</p>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Payment Info */}
-                    <div className="border-t border-gray-100 bg-white px-6 py-4">
-                      <div className="flex flex-wrap justify-between items-center gap-4">
-                        <div>
-                          <p className="text-xs text-gray-500">Payment Method</p>
-                          <p className="font-semibold text-gray-900 capitalize">{order.paymentMethod || 'Cash on Delivery'}</p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-gray-500">Payment Status</p>
-                          <span className={`inline-block px-2 py-1 rounded-full text-xs font-semibold ${
-                            order.paymentStatus === "paid" ? "bg-green-100 text-green-800" : "bg-yellow-100 text-yellow-800"
-                          }`}>
-                            {order.paymentStatus === "paid" ? "Paid" : "Pending"}
-                          </span>
-                        </div>
-                        {order.trackingNumber && (
-                          <div>
-                            <p className="text-xs text-gray-500">Tracking Number</p>
-                            <p className="font-semibold text-gray-900">{order.trackingNumber}</p>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Order Actions */}
-                    <div className="border-t border-gray-100 px-6 py-4 bg-gray-50">
-                      <div className="flex gap-3 flex-wrap">
-                        {order.orderStatus?.toLowerCase() === "delivered" && (
-                          <button
-                            onClick={() => toast.info("Review feature coming soon!")}
-                            className="px-4 py-2 text-sm font-semibold border border-[#5c5f2a] text-[#5c5f2a] rounded-full hover:bg-[#5c5f2a] hover:text-white transition"
-                          >
-                            Write a Review
-                          </button>
-                        )}
-                        {order.orderStatus?.toLowerCase() === "pending" && (
-                          <button
-                            onClick={() => toast.info("Cancel order feature coming soon!")}
-                            className="px-4 py-2 text-sm font-semibold border border-red-500 text-red-500 rounded-full hover:bg-red-500 hover:text-white transition"
-                          >
-                            Cancel Order
-                          </button>
-                        )}
-                        {order.orderStatus?.toLowerCase() === "shipped" && order.trackingNumber && (
-                          <button
-                            onClick={() => toast.info(`Tracking: ${order.trackingNumber}`)}
-                            className="px-4 py-2 text-sm font-semibold border border-blue-500 text-blue-500 rounded-full hover:bg-blue-500 hover:text-white transition"
-                          >
-                            Track Order
-                          </button>
-                        )}
-                        <button
-                          onClick={() => toast.info("Re-order feature coming soon!")}
-                          className="px-4 py-2 text-sm font-semibold bg-[#5c5f2a] text-white rounded-full hover:bg-[#4a4d20] transition"
-                        >
-                          Re-order
-                        </button>
-                      </div>
-                    </div>
                   </div>
                 )}
               </div>
