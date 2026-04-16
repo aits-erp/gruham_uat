@@ -20,8 +20,8 @@ const addressSchema = new mongoose.Schema({
 
 const EcommerceUserSchema = new mongoose.Schema(
   {
-    email: { type: String, lowercase: true, sparse: true },
-    phone: { type: String, unique: true, sparse: true },
+    email: { type: String, lowercase: true,  },
+    phone: { type: String,  },
     name: { type: String, default: "" },
     roles: { type: [String], default: ["customer"] },
     type: { 
@@ -31,7 +31,7 @@ const EcommerceUserSchema = new mongoose.Schema(
     },
     companyId: { type: mongoose.Schema.Types.ObjectId, ref: "Company" },
     status: { type: String, enum: ["active", "inactive"], default: "active" },
-    customerCode: { type: String, unique: true, sparse: true },
+    customerCode: { type: String, },
     // Location field
     location: {
       lat: Number,

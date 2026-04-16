@@ -3,8 +3,8 @@
 import Image from "next/image";
 import React, { useState, useEffect } from "react";
 import { FaHeart } from "react-icons/fa";
-import { useWishlist } from "../../context/WishlistContext";
-import { useCart } from "../../context/CartContext";
+import { useWishlist } from "@/app/(dashboard)/context/WishlistContext";
+import { useCart } from "@/app/(dashboard)/context/CartContext";
 import { useRouter, useParams } from "next/navigation";
 import axios from "axios";
 import { toast } from "react-toastify";

@@ -13,7 +13,7 @@ import {
 } from "react-icons/fa";
 
 // ============================================================
-// HELPERS & SUB-COMPONENTS (Defined OUTSIDE to prevent focus loss)
+// HELPERS & SUB-COMPONENTS
 // ============================================================
 
 const generateUniqueId = () => {
@@ -69,6 +69,10 @@ const initialGRNState = {
   items: [{
     item: "", itemCode: "", itemName: "", itemDescription: "", quantity: 0, allowedQuantity: 0, receivedQuantity: 0,
     unitPrice: 0, discount: 0, freight: 0, gstRate: 0, taxOption: "GST", managedBy: "none", batches: [], warehouse: "", stockAdded: false,
+    variantId: null,        // 👈 NEW
+    variantName: null,      // 👈 NEW
+    enableVariants: false,  // 👈 NEW (stores item's variant flag)
+    variants: [],           // 👈 NEW (stores item's variant array)
   }],
   salesEmployee: "", remarks: "", freight: 0, rounding: 0, totalBeforeDiscount: 0, gstTotal: 0, grandTotal: 0, purchaseOrderId: "",
 };
@@ -160,6 +164,65 @@ function GRNForm() {
     });
   }, [computeItemValues]);
 
+  // 👇 NEW: handle item selection (fetch full item details including variants)
+  const handleItemSelect = useCallback(async (index, selectedItem) => {
+    // selectedItem is the full item object from the search (contains variants, enableVariants, etc.)
+    setGrnData(prev => {
+      const items = [...prev.items];
+      items[index] = {
+        ...items[index],
+        item: selectedItem._id,
+        itemCode: selectedItem.itemCode,
+        itemName: selectedItem.itemName,
+        itemDescription: selectedItem.description,
+        managedBy: selectedItem.managedBy || 'none',
+        enableVariants: selectedItem.enableVariants || false,
+        variants: selectedItem.variants || [],
+        // Reset variant selection when item changes
+        variantId: null,
+        variantName: null,
+        // Optionally set default unit price from item (if no variant price)
+        unitPrice: selectedItem.unitPrice || 0,
+      };
+      // Recompute totals after updating
+      items[index] = { ...items[index], ...computeItemValues(items[index]) };
+      return { ...prev, items };
+    });
+  }, [computeItemValues]);
+
+  // 👇 NEW: handle variant change
+  const handleVariantChange = useCallback((itemIndex, variantId, variantName) => {
+    setGrnData(prev => {
+      const items = [...prev.items];
+      const item = items[itemIndex];
+      const variant = item.variants?.find(v => v.id === variantId);
+      items[itemIndex] = {
+        ...item,
+        variantId: variantId !== null ? Number(variantId) : null,
+        variantName: variantName || null,
+        // Override unitPrice if variant has a price, otherwise keep existing
+        unitPrice: variant?.price ?? item.unitPrice,
+      };
+      // Recompute derived values
+      items[itemIndex] = { ...items[itemIndex], ...computeItemValues(items[itemIndex]) };
+      return { ...prev, items };
+    });
+  }, [computeItemValues]);
+
+  const handleAddItem = useCallback(() => {
+    setGrnData(prev => ({
+      ...prev,
+      items: [...prev.items, { ...initialGRNState.items[0] }]
+    }));
+  }, []);
+
+  const handleRemoveItem = useCallback((index) => {
+    setGrnData(prev => ({
+      ...prev,
+      items: prev.items.filter((_, i) => i !== index)
+    }));
+  }, []);
+
   const handleSubmit = async () => {
     if (!grnData.supplier) return toast.error("Please select a supplier.");
     setLoading(true);
@@ -223,7 +286,14 @@ function GRNForm() {
         <div className="bg-white rounded-2xl shadow-sm border mb-5 overflow-hidden">
           <div className="px-6 py-4 border-b bg-emerald-50/40 font-bold flex items-center gap-2"><FaBoxOpen className="text-emerald-500" /> Items Information</div>
           <div className="p-4 overflow-x-auto">
-            <ItemSection items={grnData.items} onItemChange={handleItemChange} onAddItem={() => setGrnData(p => ({ ...p, items: [...p.items, { ...initialGRNState.items[0] }] }))} onItemSelect={(i, sku) => handleItemChange(i, { target: { name: 'item', value: sku._id } })} onRemoveItem={i => setGrnData(p => ({ ...p, items: p.items.filter((_, idx) => idx !== i) }))} />
+            <ItemSection
+              items={grnData.items}
+              onItemChange={handleItemChange}
+              onItemSelect={handleItemSelect}          // 👈 updated
+              onVariantChange={handleVariantChange}    // 👈 new prop
+              onAddItem={handleAddItem}
+              onRemoveItem={handleRemoveItem}
+            />
           </div>
         </div>
 
@@ -264,6 +334,275 @@ function GRNForm() {
     </div>
   );
 }
+
+
+
+// "use client";
+
+// import { useState, useEffect, useCallback, Suspense, useMemo, useRef } from "react";
+// import { useRouter, useSearchParams } from "next/navigation";
+// import axios from "axios";
+// import SupplierSearch from "@/components/SupplierSearch";
+// import ItemSection from "@/components/ItemSection";
+// import { toast, ToastContainer } from "react-toastify";
+// import "react-toastify/dist/ReactToastify.css";
+// import {
+//   FaArrowLeft, FaCheck, FaUser, FaCalendarAlt,
+//   FaBoxOpen, FaCalculator, FaPaperclip, FaTimes, FaLayerGroup
+// } from "react-icons/fa";
+
+// // ============================================================
+// // HELPERS & SUB-COMPONENTS (Defined OUTSIDE to prevent focus loss)
+// // ============================================================
+
+// const generateUniqueId = () => {
+//   if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+//   return Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+// };
+
+// const ArrayOf = (arr) => Array.isArray(arr) ? arr : [];
+
+// const round = (num, d = 2) => {
+//   const n = Number(num);
+//   return isNaN(n) ? 0 : Number(n.toFixed(d));
+// };
+
+// function formatDateForInput(dateStr) {
+//   if (!dateStr) return "";
+//   const d = new Date(dateStr);
+//   return isNaN(d.getTime()) ? "" : d.toISOString().split('T')[0];
+// }
+
+// const Lbl = ({ text, req }) => (
+//   <label className="block text-[10.5px] font-bold uppercase tracking-wider text-gray-500 mb-1.5">
+//     {text}{req && <span className="text-red-500 ml-0.5">*</span>}
+//   </label>
+// );
+
+// const fi = (readOnly = false) =>
+//   `w-full px-3 py-2.5 rounded-lg border text-sm font-medium transition-all outline-none
+//    ${readOnly ? "border-gray-100 bg-gray-50 text-gray-400 cursor-not-allowed" : "border-gray-200 bg-white focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 placeholder:text-gray-300"}`;
+
+// const SectionCard = ({ icon: Icon, title, subtitle, children, color = "indigo" }) => (
+//   <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mb-5">
+//     <div className={`flex items-center gap-3 px-6 py-4 border-b border-gray-100 bg-${color}-50/40`}>
+//       <div className={`w-8 h-8 rounded-lg bg-${color}-100 flex items-center justify-center text-${color}-500`}><Icon className="text-sm" /></div>
+//       <div><p className="text-sm font-bold text-gray-900">{title}</p>{subtitle && <p className="text-xs text-gray-400">{subtitle}</p>}</div>
+//     </div>
+//     <div className="px-6 py-5">{children}</div>
+//   </div>
+// );
+
+// const ReadField = ({ label, value }) => (
+//   <div>
+//     <Lbl text={label} />
+//     <div className="px-3 py-2.5 rounded-lg border border-gray-100 bg-gray-50 text-sm font-semibold text-gray-400">
+//       {value || <span className="italic font-normal text-gray-300">Auto-filled</span>}
+//     </div>
+//   </div>
+// );
+
+// const initialGRNState = {
+//   supplier: "", supplierCode: "", supplierName: "", contactPerson: "", refNumber: "",
+//   status: "Received", postingDate: formatDateForInput(new Date()), validUntil: "", documentDate: formatDateForInput(new Date()),
+//   items: [{
+//     item: "", itemCode: "", itemName: "", itemDescription: "", quantity: 0, allowedQuantity: 0, receivedQuantity: 0,
+//     unitPrice: 0, discount: 0, freight: 0, gstRate: 0, taxOption: "GST", managedBy: "none", batches: [], warehouse: "", stockAdded: false,
+//   }],
+//   salesEmployee: "", remarks: "", freight: 0, rounding: 0, totalBeforeDiscount: 0, gstTotal: 0, grandTotal: 0, purchaseOrderId: "",
+// };
+
+// // ============================================================
+// // MAIN PAGE COMPONENT
+// // ============================================================
+
+// export default function GRNFormWrapper() {
+//   return (
+//     <Suspense fallback={<div className="p-10 text-center text-gray-400 font-medium">Loading form data...</div>}>
+//       <GRNForm />
+//     </Suspense>
+//   );
+// }
+
+// function GRNForm() {
+//   const router = useRouter();
+//   const search = useSearchParams();
+//   const editId = search.get("editId");
+//   const isEdit = Boolean(editId);
+
+//   const [grnData, setGrnData] = useState(initialGRNState);
+//   const [existingFiles, setExistingFiles] = useState([]);
+//   const [attachments, setAttachments] = useState([]);
+//   const [removedFiles, setRemovedFiles] = useState([]);
+//   const [loading, setLoading] = useState(false);
+//   const [showBatchModal, setShowBatchModal] = useState(false);
+//   const [selectedBatchItemIndex, setSelectedBatchItemIndex] = useState(null);
+
+//   const computeItemValues = useCallback((it) => {
+//     const q = Number(it.quantity) || 0;
+//     const pad = Number(it.unitPrice || 0) - Number(it.discount || 0);
+//     const tot = pad * q + Number(it.freight || 0);
+//     const rate = Number(it.taxOption === "IGST" ? (it.igstRate || it.gstRate) : it.gstRate) || 0;
+//     const gstAmt = (tot * rate) / 100;
+//     return { priceAfterDiscount: pad, totalAmount: tot, gstAmount: gstAmt };
+//   }, []);
+
+//   // Sync Totals
+//   useEffect(() => {
+//     const totalBeforeDiscount = grnData.items.reduce((s, it) => s + (it.priceAfterDiscount || 0) * (it.quantity || 0), 0);
+//     const gstTotal = grnData.items.reduce((s, it) => s + (it.gstAmount || 0), 0);
+//     const grandTotal = totalBeforeDiscount + gstTotal + Number(grnData.freight || 0) + Number(grnData.rounding || 0);
+//     setGrnData(p => ({ ...p, totalBeforeDiscount, gstTotal, grandTotal }));
+//   }, [grnData.items, grnData.freight, grnData.rounding]);
+
+//   // Load PO or Edit Data
+//   useEffect(() => {
+//     const poJSON = sessionStorage.getItem("grnData");
+//     if (poJSON && !isEdit) {
+//       const po = JSON.parse(poJSON);
+//       setGrnData(prev => ({
+//         ...prev,
+//         purchaseOrderId: po._id, supplier: po.supplier, supplierCode: po.supplierCode, supplierName: po.supplierName,
+//         contactPerson: po.contactPerson, postingDate: formatDateForInput(new Date()),
+//         items: po.items.map(poItem => {
+//           const rem = (Number(poItem.quantity) || 0) - (Number(poItem.receivedQuantity) || 0);
+//           const base = { ...poItem, quantity: rem, allowedQuantity: rem, receivedQuantity: 0 };
+//           return { ...base, ...computeItemValues(base) };
+//         })
+//       }));
+//       setExistingFiles(po.attachments || []);
+//       sessionStorage.removeItem("grnData");
+//     } else if (isEdit) {
+//       setLoading(true);
+//       axios.get(`/api/grn/${editId}`, { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } })
+//         .then(res => {
+//           const rec = res.data.data;
+//           setGrnData({ ...rec, postingDate: formatDateForInput(rec.postingDate), items: rec.items.map(it => ({ ...it, allowedQuantity: it.quantity })) });
+//           setExistingFiles(rec.attachments || []);
+//         })
+//         .finally(() => setLoading(false));
+//     }
+//   }, [isEdit, editId, computeItemValues]);
+
+//   const handleInputChange = useCallback((e) => {
+//     const { name, value } = e.target;
+//     setGrnData(p => ({ ...p, [name]: value }));
+//   }, []);
+
+//   const handleItemChange = useCallback((i, e) => {
+//     const { name, value } = e.target;
+//     setGrnData(p => {
+//       const items = [...p.items];
+//       items[i] = { ...items[i], [name]: ["quantity", "unitPrice", "discount", "freight"].includes(name) ? Number(value) || 0 : value };
+//       items[i] = { ...items[i], ...computeItemValues(items[i]) };
+//       return { ...p, items };
+//     });
+//   }, [computeItemValues]);
+
+//   const handleSubmit = async () => {
+//     if (!grnData.supplier) return toast.error("Please select a supplier.");
+//     setLoading(true);
+//     try {
+//       const token = localStorage.getItem("token");
+//       const fd = new FormData();
+//       fd.append("grnData", JSON.stringify({ ...grnData, existingFiles, removedFiles }));
+//       attachments.forEach(file => fd.append("newAttachments", file));
+
+//       const res = await axios({
+//         method: isEdit ? "put" : "post",
+//         url: isEdit ? `/api/grn/${editId}` : "/api/grn",
+//         data: fd,
+//         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' }
+//       });
+
+//       toast.success("GRN Saved Successfully");
+//       router.push("/admin/grn-view");
+//     } catch (err) {
+//       toast.error(err.response?.data?.error || "Error saving GRN");
+//     } finally { setLoading(false); }
+//   };
+
+//   if (loading && !grnData.supplierName) return <div className="p-10 text-center text-gray-400">Loading GRN Data...</div>;
+
+//   return (
+//     <div className="min-h-screen bg-gray-50">
+//       <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6">
+//         <button onClick={() => router.push("/admin/grn-view")} className="flex items-center gap-1.5 text-indigo-600 font-semibold text-sm mb-4">
+//           <FaArrowLeft className="text-xs" /> Back to List
+//         </button>
+
+//         <h1 className="text-2xl font-extrabold text-gray-900 mb-6">{isEdit ? "Edit GRN" : "New Goods Receipt (GRN)"}</h1>
+
+//         <SectionCard icon={FaUser} title="Supplier Details" color="indigo">
+//           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+//             <div className="sm:col-span-1">
+//                {grnData.supplierName ? <ReadField label="Supplier Name" value={grnData.supplierName} /> : <SupplierSearch onSelectSupplier={s => setGrnData(p => ({ ...p, supplier: s._id, supplierCode: s.supplierCode, supplierName: s.supplierName, contactPerson: s.contactPersonName }))} />}
+//             </div>
+//             <ReadField label="Supplier Code" value={grnData.supplierCode} />
+//             <ReadField label="Contact Person" value={grnData.contactPerson} />
+//             <div>
+//               <Lbl text="Reference No." /><input className={fi()} name="refNumber" value={grnData.refNumber || ""} onChange={handleInputChange} placeholder="e.g. BILL-101" />
+//             </div>
+//           </div>
+//         </SectionCard>
+
+//         <SectionCard icon={FaCalendarAlt} title="Date & Status" color="blue">
+//           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+//             <div><Lbl text="Posting Date" req /><input className={fi()} type="date" name="postingDate" value={grnData.postingDate} onChange={handleInputChange} /></div>
+//             <div><Lbl text="Document Date" /><input className={fi()} type="date" name="documentDate" value={grnData.documentDate} onChange={handleInputChange} /></div>
+//             <div>
+//               <Lbl text="Status" />
+//               <select className={fi()} name="status" value={grnData.status} onChange={handleInputChange}>
+//                 <option value="Received">Received</option><option value="Partial">Partial</option>
+//               </select>
+//             </div>
+//           </div>
+//         </SectionCard>
+
+//         <div className="bg-white rounded-2xl shadow-sm border mb-5 overflow-hidden">
+//           <div className="px-6 py-4 border-b bg-emerald-50/40 font-bold flex items-center gap-2"><FaBoxOpen className="text-emerald-500" /> Items Information</div>
+//           <div className="p-4 overflow-x-auto">
+//             <ItemSection items={grnData.items} onItemChange={handleItemChange} onAddItem={() => setGrnData(p => ({ ...p, items: [...p.items, { ...initialGRNState.items[0] }] }))} onItemSelect={(i, sku) => handleItemChange(i, { target: { name: 'item', value: sku._id } })} onRemoveItem={i => setGrnData(p => ({ ...p, items: p.items.filter((_, idx) => idx !== i) }))} />
+//           </div>
+//         </div>
+
+//         <SectionCard icon={FaCalculator} title="Summary" color="amber">
+//           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+//             <ReadField label="Taxable Amount" value={`₹ ${grnData.totalBeforeDiscount.toFixed(2)}`} />
+//             <ReadField label="GST Total" value={`₹ ${grnData.gstTotal.toFixed(2)}`} />
+//             <div><Lbl text="Grand Total" /><div className="px-3 py-2.5 rounded-lg border-2 border-indigo-200 bg-indigo-50 font-extrabold text-indigo-700">₹ {grnData.grandTotal.toFixed(2)}</div></div>
+//           </div>
+//           <div className="mt-4"><Lbl text="Remarks" /><textarea className={`${fi()} resize-none`} name="remarks" rows={2} value={grnData.remarks || ""} onChange={handleInputChange} /></div>
+//         </SectionCard>
+
+//         <SectionCard icon={FaPaperclip} title="Attachments" color="gray">
+//            <div className="mb-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
+//             {existingFiles.map((file, idx) => (
+//               <div key={idx} className="relative border rounded-xl p-2 bg-gray-50">
+//                 <div className="h-20 flex items-center justify-center overflow-hidden">
+//                   {file.fileUrl?.toLowerCase().endsWith(".pdf") ? <object data={file.fileUrl} type="application/pdf" className="h-full w-full pointer-events-none" /> : <img src={file.fileUrl} className="h-full object-cover" />}
+//                 </div>
+//                 <button onClick={() => { setExistingFiles(prev => prev.filter((_, i) => i !== idx)); setRemovedFiles(prev => [...prev, file]); }} className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-[10px] shadow-lg"><FaTimes /></button>
+//               </div>
+//             ))}
+//           </div>
+//           <label className="flex items-center justify-center gap-3 px-4 py-4 rounded-xl border-2 border-dashed border-gray-200 cursor-pointer hover:bg-indigo-50 transition-all group">
+//             <FaPaperclip className="text-gray-300 group-hover:text-indigo-400" /><span className="text-sm font-medium text-gray-400">Click to upload files</span>
+//             <input type="file" multiple accept="image/*,application/pdf" hidden onChange={e => setAttachments([...attachments, ...Array.from(e.target.files)])} />
+//           </label>
+//         </SectionCard>
+
+//         <div className="flex items-center justify-between pt-4 pb-10">
+//           <button onClick={() => router.push("/admin/grn-view")} className="px-6 py-2.5 rounded-xl bg-white border border-gray-200 font-bold text-sm">Cancel</button>
+//           <button onClick={handleSubmit} disabled={loading} className={`px-8 py-2.5 rounded-xl text-white font-bold text-sm shadow-lg ${loading ? "bg-gray-300" : "bg-indigo-600 hover:bg-indigo-700"}`}>
+//             {loading ? "Processing..." : isEdit ? "Update GRN" : "Submit GRN"}
+//           </button>
+//         </div>
+//       </div>
+//       <ToastContainer position="top-right" autoClose={3000} />
+//     </div>
+//   );
+// }
 
 
 

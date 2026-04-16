@@ -1,6 +1,6 @@
 // File: src/app/api/grn/route.js
 import Supplier from "@/models/SupplierModels";
-import ItemModels from "@/models/ItemModels";
+import Item from "@/models/ItemModels";
 
 import { NextResponse } from "next/server";
 import mongoose, { Types } from "mongoose";
@@ -13,6 +13,7 @@ import Inventory from "@/models/Inventory";
 import StockMovement from "@/models/StockMovement";
 import { getTokenFromHeader, verifyJWT } from "@/lib/auth";
 import Counter from "@/models/Counter";
+
 
 // ✅ ADD: Auto accounting entry
 import { autoGRN } from "@/lib/autoTransaction";
@@ -78,243 +79,469 @@ async function processGrnItem(item, grnId, decodedToken, fromPO) {
   const itemId = item.item?._id || item.item;
   const warehouseId = item.warehouse?._id || item.warehouse;
   const binId = item.selectedBin?._id || item.selectedBin || null;
+  const variantId = item.variantId != null ? Number(item.variantId) : null;  // ✅ from GRN item
 
-  if (!itemId || !Types.ObjectId.isValid(itemId) || !warehouseId || !Types.ObjectId.isValid(warehouseId) || qty <= 0) {
+  // 1. Basic validation
+  if (!itemId || !Types.ObjectId.isValid(itemId) ||
+      !warehouseId || !Types.ObjectId.isValid(warehouseId) ||
+      qty <= 0) {
     console.warn(`Skipping invalid GRN item: ${item.itemCode || itemId}`, item);
     throw new Error(`Invalid GRN item for ${item.itemCode || 'unknown'}`);
   }
 
-  let inventoryDoc = await Inventory.findOne({
-    item: new Types.ObjectId(itemId), warehouse: new Types.ObjectId(warehouseId),
-    bin: binId ? new Types.ObjectId(binId) : { $in: [null, undefined] }, companyId: decodedToken.companyId,
-  });
+  // 2. Fetch the actual Item master to get management type and variant config
+  const itemDoc = await Item.findById(itemId).lean();
+  if (!itemDoc) throw new Error(`Item ${itemId} not found`);
 
+  const managedBy = itemDoc.managedBy?.toLowerCase() || "none";
+  const enableVariants = itemDoc.enableVariants;
+
+  // 3. Validate variant requirement
+  if (enableVariants && (variantId === null || variantId === undefined)) {
+    throw new Error(`Variant ID is required for item ${itemDoc.itemCode} (variants enabled)`);
+  }
+  if (enableVariants && variantId !== null) {
+    const variantExists = itemDoc.variants?.some(v => v.id === variantId);
+    if (!variantExists) {
+      throw new Error(`Variant with id ${variantId} not found for item ${itemDoc.itemCode}`);
+    }
+  }
+
+  // 4. Build inventory lookup query (including variantId)
+  const lookupQuery = {
+    item: new Types.ObjectId(itemId),
+    warehouse: new Types.ObjectId(warehouseId),
+    companyId: decodedToken.companyId,
+  };
+  if (variantId !== null) lookupQuery.variantId = variantId;
+  if (binId && Types.ObjectId.isValid(binId)) {
+    lookupQuery.bin = new Types.ObjectId(binId);
+  } else {
+    lookupQuery.bin = { $in: [null, undefined] };
+  }
+
+  let inventoryDoc = await Inventory.findOne(lookupQuery);
+
+  // 5. Create inventory document if not exists
   if (!inventoryDoc) {
     inventoryDoc = new Inventory({
-      item: new Types.ObjectId(itemId), warehouse: new Types.ObjectId(warehouseId),
-      bin: binId ? new Types.ObjectId(binId) : null, companyId: decodedToken.companyId,
-      quantity: 0, committed: 0, onOrder: 0, batches: [],
+      item: new Types.ObjectId(itemId),
+      warehouse: new Types.ObjectId(warehouseId),
+      bin: binId && Types.ObjectId.isValid(binId) ? new Types.ObjectId(binId) : null,
+      variantId: variantId,          // ✅ store variant
+      companyId: decodedToken.companyId,
+      quantity: 0,
+      committed: 0,
+      onOrder: 0,
+      batches: [],
     });
   }
 
-  if (fromPO) inventoryDoc.onOrder = Math.max((inventoryDoc.onOrder || 0) - qty, 0);
+  // 6. Decrement onOrder if coming from a PO
+  if (fromPO) {
+    const decrement = Math.min(inventoryDoc.onOrder || 0, qty);
+    inventoryDoc.onOrder = (inventoryDoc.onOrder || 0) - decrement;
+  }
 
-  if (item.managedBy?.toLowerCase() === "batch" && Array.isArray(item.batches) && item.batches.length > 0) {
-    for (const receivedBatch of item.batches) {
+  // 7. Handle batch-managed items (using itemDoc.managedBy, not item.managedBy)
+  if (managedBy === "batch") {
+    const receivedBatches = item.batches || [];
+    if (!Array.isArray(receivedBatches) || receivedBatches.length === 0) {
+      throw new Error(`Batch-managed item ${itemDoc.itemCode} requires batch details`);
+    }
+
+    if (!Array.isArray(inventoryDoc.batches)) inventoryDoc.batches = [];
+
+    for (const receivedBatch of receivedBatches) {
       const batchQty = Number(receivedBatch.allocatedQuantity ?? receivedBatch.batchQuantity);
+      const batchNumber = receivedBatch.batchNumber;
       const batchBinId = receivedBatch.selectedBin?._id || receivedBatch.selectedBin || binId || null;
-      if (!receivedBatch.batchNumber || isNaN(batchQty) || batchQty <= 0) { console.warn(`Skipping invalid batch`, receivedBatch); continue; }
-      if (!Array.isArray(inventoryDoc.batches)) inventoryDoc.batches = [];
-      const batchIndex = inventoryDoc.batches.findIndex(b => b.batchNumber === receivedBatch.batchNumber);
+
+      if (!batchNumber || isNaN(batchQty) || batchQty <= 0) {
+        console.warn(`Skipping invalid batch for item ${itemDoc.itemCode}`, receivedBatch);
+        continue;
+      }
+
+      const batchIndex = inventoryDoc.batches.findIndex(b => b.batchNumber === batchNumber);
       if (batchIndex === -1) {
-        inventoryDoc.batches.push({ batchNumber: receivedBatch.batchNumber, quantity: batchQty, expiryDate: receivedBatch.expiryDate ? new Date(receivedBatch.expiryDate) : null, manufacturer: receivedBatch.manufacturer || "", unitPrice: receivedBatch.unitPrice || 0, bin: batchBinId ? new Types.ObjectId(batchBinId) : null });
+        inventoryDoc.batches.push({
+          batchNumber: batchNumber,
+          quantity: batchQty,
+          expiryDate: receivedBatch.expiryDate ? new Date(receivedBatch.expiryDate) : null,
+          manufacturer: receivedBatch.manufacturer || "",
+          unitPrice: receivedBatch.unitPrice || 0,
+          bin: batchBinId && Types.ObjectId.isValid(batchBinId) ? new Types.ObjectId(batchBinId) : null,
+        });
       } else {
         inventoryDoc.batches[batchIndex].quantity += batchQty;
-        if (batchBinId) inventoryDoc.batches[batchIndex].bin = new Types.ObjectId(batchBinId);
+        if (batchBinId && !inventoryDoc.batches[batchIndex].bin) {
+          inventoryDoc.batches[batchIndex].bin = new Types.ObjectId(batchBinId);
+        }
       }
-      inventoryDoc.quantity += batchQty;
-      await StockMovement.create([{ item: new Types.ObjectId(itemId), warehouse: new Types.ObjectId(warehouseId), bin: batchBinId ? new Types.ObjectId(batchBinId) : null, movementType: "IN", quantity: batchQty, reference: grnId, referenceType: "GRN", remarks: `Stock received via GRN - Batch ${receivedBatch.batchNumber}`, companyId: decodedToken.companyId, createdBy: decodedToken.userId }], );
+
+      // Record stock movement for this batch (include variantId)
+      await StockMovement.create({
+        item: new Types.ObjectId(itemId),
+        warehouse: new Types.ObjectId(warehouseId),
+        bin: batchBinId && Types.ObjectId.isValid(batchBinId) ? new Types.ObjectId(batchBinId) : null,
+        variantId: variantId,           // ✅ track variant in movement
+        batchNumber: batchNumber,
+        movementType: "IN",
+        quantity: batchQty,
+        reference: grnId,
+        referenceType: "GRN",
+        remarks: `Stock received via GRN - Batch ${batchNumber}`,
+        companyId: decodedToken.companyId,
+        createdBy: decodedToken.userId,
+      });
     }
+
+    // Recalculate total quantity from batches (optional but safe)
+    inventoryDoc.quantity = inventoryDoc.batches.reduce((sum, b) => sum + b.quantity, 0);
+
   } else {
+    // 8. Non-batch (simple quantity) items
     inventoryDoc.quantity += qty;
-    await StockMovement.create([{ item: new Types.ObjectId(itemId), warehouse: new Types.ObjectId(warehouseId), bin: binId ? new Types.ObjectId(binId) : null, movementType: "IN", quantity: qty, reference: grnId, referenceType: "GRN", remarks: "Stock received via GRN", companyId: decodedToken.companyId, createdBy: decodedToken.userId }], );
+
+    await StockMovement.create({
+      item: new Types.ObjectId(itemId),
+      warehouse: new Types.ObjectId(warehouseId),
+      bin: binId && Types.ObjectId.isValid(binId) ? new Types.ObjectId(binId) : null,
+      variantId: variantId,           // ✅ track variant
+      movementType: "IN",
+      quantity: qty,
+      reference: grnId,
+      referenceType: "GRN",
+      remarks: "Stock received via GRN",
+      companyId: decodedToken.companyId,
+      createdBy: decodedToken.userId,
+    });
   }
 
   await inventoryDoc.save();
-  console.log(`Processed GRN item: ${item.itemCode || itemId}, qty: ${qty}`);
+  console.log(`Processed GRN item: ${itemDoc.itemCode}, variant: ${variantId ?? 'base'}, qty: ${qty}`);
 }
 
-// ─── POST ─────────────────────────────────────────────────────
-// ─── POST ─────────────────────────────────────────────────────
-export async function POST(req) {
-  await dbConnect();
-  // REMOVE: const session = await mongoose.startSession();
-  // REMOVE: session.startTransaction();
 
-  try {
-    const token = getTokenFromHeader(req);
-    if (!token) throw new Error("Unauthorized: No token provided");
-    const decoded = verifyJWT(token);
-    const companyId = decoded?.companyId;
-    if (!companyId) throw new Error("Unauthorized: Invalid token payload");
 
-    const { fields, files } = await parseForm(req);
-    const grnData = JSON.parse(fields.grnData || "{}");
-    const removedFilesPublicIds = JSON.parse(fields.removedFiles || "[]");
-    const existingFilesMetadata = JSON.parse(fields.existingFiles || "[]");
 
-    if (!Array.isArray(grnData.items) || grnData.items.length === 0)
-      throw new Error("Invalid GRN data: Missing items or invalid structure.");
+// // File: src/app/api/grn/route.js
+// import Supplier from "@/models/SupplierModels";
+// import ItemModels from "@/models/ItemModels";
 
-    grnData.companyId = companyId;
-    delete grnData._id;
+// import { NextResponse } from "next/server";
+// import mongoose, { Types } from "mongoose";
+// import { v2 as cloudinary } from "cloudinary";
+// import formidable from "formidable";
+// import { Readable } from "stream";
+// import dbConnect from "@/lib/db";
+// import GRN from "@/models/grnModels";
+// import Inventory from "@/models/Inventory";
+// import StockMovement from "@/models/StockMovement";
+// import { getTokenFromHeader, verifyJWT } from "@/lib/auth";
+// import Counter from "@/models/Counter";
 
-    const newUploadedFiles = await uploadFiles(files.newAttachments || [], "grn-attachments", companyId);
-    grnData.attachments = [
-      ...(existingFilesMetadata.filter(f => !removedFilesPublicIds.includes(f.publicId)) || []),
-      ...newUploadedFiles,
-    ];
-    await deleteFilesByPublicIds(removedFilesPublicIds);
+// // ✅ ADD: Auto accounting entry
+// import { autoGRN } from "@/lib/autoTransaction";
 
-    const now = new Date();
-    const currentYear = now.getFullYear();
-    const currentMonth = now.getMonth() + 1;
-    let fyStart = currentYear, fyEnd = currentYear + 1;
-    if (currentMonth < 4) { fyStart = currentYear - 1; fyEnd = currentYear; }
-    const financialYear = `${fyStart}-${String(fyEnd).slice(-2)}`;
-    const key = "PurchaseGrn";
+// export const dynamic = 'force-dynamic';
 
-    // REMOVE .session(session) from these queries
-    let counter = await Counter.findOne({ id: key, companyId });
-    if (!counter) {
-      const created = await Counter.create([{ id: key, companyId, seq: 1 }]);
-      counter = created[0];
-    } else {
-      counter.seq += 1;
-      await counter.save();
-    }
+// cloudinary.config({
+//   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+//   api_key: process.env.CLOUDINARY_API_KEY,
+//   api_secret: process.env.CLOUDINARY_API_SECRET,
+// });
 
-    grnData.documentNumberGrn = `PURCH-GRN/${financialYear}/${String(counter.seq).padStart(5, "0")}`;
+// function createNodeCompatibleRequest(req) {
+//   const nodeReq = Readable.fromWeb(req.body);
+//   nodeReq.headers = Object.fromEntries(req.headers.entries());
+//   nodeReq.method = req.method;
+//   return nodeReq;
+// }
 
-    const [grn] = await GRN.create([grnData]);
-    const fromPO = !!grnData.purchaseOrderId;
+// async function parseForm(req) {
+//   return new Promise((resolve, reject) => {
+//     const form = formidable({ multiples: true, keepExtensions: true, maxFileSize: 10 * 1024 * 1024 });
+//     const nodeReq = createNodeCompatibleRequest(req);
+//     form.parse(nodeReq, (err, fields, files) => {
+//       if (err) { console.error("Formidable parse error:", err); return reject(err); }
+//       const parsedFields = {};
+//       for (const key in fields) parsedFields[key] = Array.isArray(fields[key]) ? fields[key][0] : fields[key];
+//       const parsedFiles = {};
+//       for (const key in files) parsedFiles[key] = Array.isArray(files[key]) ? files[key] : [files[key]];
+//       resolve({ fields: parsedFields, files: parsedFiles });
+//     });
+//   });
+// }
 
-    for (const item of grnData.items) {
-      await processGrnItem(item, grn._id, decoded, fromPO); // Remove session parameter
-    }
+// async function uploadFiles(fileObjects, folderName, companyId) {
+//   const uploadedFiles = [];
+//   const fileArray = Array.isArray(fileObjects) ? fileObjects : [];
+//   for (const file of fileArray) {
+//     if (!file || !file.filepath) { console.warn("Skipping invalid file:", file); continue; }
+//     try {
+//       const result = await cloudinary.uploader.upload(file.filepath, {
+//         folder: `${folderName}/${companyId || 'default_company_attachments'}`, resource_type: "auto", original_filename: file.originalFilename,
+//       });
+//       uploadedFiles.push({ fileName: file.originalFilename || result.original_filename, fileUrl: result.secure_url, fileType: file.mimetype || "application/octet-stream", uploadedAt: new Date(), publicId: result.public_id });
+//     } catch (uploadError) {
+//       console.error(`Cloudinary upload error for ${file.originalFilename}:`, uploadError);
+//       throw new Error(`Failed to upload file ${file.originalFilename}: ${uploadError.message}`);
+//     }
+//   }
+//   return uploadedFiles;
+// }
 
-    // REMOVE: await session.commitTransaction();
-    // REMOVE: session.endSession();
+// async function deleteFilesByPublicIds(publicIds) {
+//   if (!publicIds || publicIds.length === 0) return;
+//   for (const publicId of publicIds) {
+//     try { await cloudinary.uploader.destroy(publicId); }
+//     catch (deleteError) { console.error(`Error deleting Cloudinary asset ${publicId}:`, deleteError); }
+//   }
+// }
 
-    // ✅ AUTO ACCOUNTING ENTRY
-    try {
-      const totalAmount = grnData.grandTotal
-        || grnData.totalAmount
-        || grnData.total
-        || grnData.items.reduce((sum, item) => sum + (Number(item.quantity) * Number(item.unitPrice || item.rate || 0)), 0)
-        || 0;
+// async function processGrnItem(item, grnId, decodedToken, fromPO) {
+//   const qty = Number(item.quantity);
+//   const itemId = item.item?._id || item.item;
+//   const warehouseId = item.warehouse?._id || item.warehouse;
+//   const binId = item.selectedBin?._id || item.selectedBin || null;
 
-      if (totalAmount > 0) {
-        await autoGRN({
-          companyId:       companyId,
-          amount:          totalAmount,
-          partyId:         grnData.supplier || grnData.supplierId || null,
-          partyName:       grnData.supplierName || grnData.supplier?.name || "Supplier",
-          referenceId:     grn._id,
-          referenceNumber: grn.documentNumberGrn,
-          narration:       `GRN ${grn.documentNumberGrn} — Stock received`,
-          date:            grnData.grnDate || new Date(),
-          createdBy:       decoded.id || decoded.userId,
-        });
-      } else {
-        console.log(`⚠️ GRN ${grn.documentNumberGrn} — amount is 0, skipping accounting entry`);
-      }
-    } catch (accountingErr) {
-      console.error(`⚠️ Accounting entry failed for GRN ${grn.documentNumberGrn}:`, accountingErr.message);
-    }
+//   if (!itemId || !Types.ObjectId.isValid(itemId) || !warehouseId || !Types.ObjectId.isValid(warehouseId) || qty <= 0) {
+//     console.warn(`Skipping invalid GRN item: ${item.itemCode || itemId}`, item);
+//     throw new Error(`Invalid GRN item for ${item.itemCode || 'unknown'}`);
+//   }
 
-    return NextResponse.json(
-      { success: true, message: "GRN created successfully and inventory updated", data: grn },
-      { status: 201 }
-    );
-  } catch (error) {
-    // REMOVE: await session.abortTransaction();
-    // REMOVE: session.endSession();
-    console.error("POST /api/grn error:", error.stack || error);
-    return NextResponse.json(
-      { success: false, error: error.message || "Failed to process GRN due to an internal server error." },
-      { status: 500 }
-    );
-  }
-}
-// ─── PUT ──────────────────────────────────────────────────────
-// No accounting change — PUT sirf GRN fields update karta hai
-export async function PUT(req) {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  try {
-    await dbConnect();
-    const token = getTokenFromHeader(req);
-    if (!token) return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
-    const decoded = verifyJWT(token);
-    if (!decoded || !decoded.companyId)
-      return NextResponse.json({ success: false, error: "Invalid token" }, { status: 401 });
+//   let inventoryDoc = await Inventory.findOne({
+//     item: new Types.ObjectId(itemId), warehouse: new Types.ObjectId(warehouseId),
+//     bin: binId ? new Types.ObjectId(binId) : { $in: [null, undefined] }, companyId: decodedToken.companyId,
+//   });
 
-    const { fields, files } = await parseForm(req);
-    const grnData = JSON.parse(fields.grnData || "{}");
-    const removedFiles = JSON.parse(fields.removedFiles || "[]");
-    const existingFiles = JSON.parse(fields.existingFiles || "[]");
+//   if (!inventoryDoc) {
+//     inventoryDoc = new Inventory({
+//       item: new Types.ObjectId(itemId), warehouse: new Types.ObjectId(warehouseId),
+//       bin: binId ? new Types.ObjectId(binId) : null, companyId: decodedToken.companyId,
+//       quantity: 0, committed: 0, onOrder: 0, batches: [],
+//     });
+//   }
 
-    if (!grnData._id) return NextResponse.json({ success: false, error: "GRN ID required" }, { status: 400 });
-    if (!Array.isArray(grnData.items) || grnData.items.length === 0)
-      return NextResponse.json({ success: false, error: "At least one item required" }, { status: 400 });
+//   if (fromPO) inventoryDoc.onOrder = Math.max((inventoryDoc.onOrder || 0) - qty, 0);
 
-    for (let i = 0; i < grnData.items.length; i++) {
-      const item = grnData.items[i];
-      if (!Types.ObjectId.isValid(item.item)) throw new Error(`Invalid item ID for row ${i + 1}`);
-      if (!Types.ObjectId.isValid(item.warehouse)) throw new Error(`Invalid warehouse ID for row ${i + 1}`);
-    }
+//   if (item.managedBy?.toLowerCase() === "batch" && Array.isArray(item.batches) && item.batches.length > 0) {
+//     for (const receivedBatch of item.batches) {
+//       const batchQty = Number(receivedBatch.allocatedQuantity ?? receivedBatch.batchQuantity);
+//       const batchBinId = receivedBatch.selectedBin?._id || receivedBatch.selectedBin || binId || null;
+//       if (!receivedBatch.batchNumber || isNaN(batchQty) || batchQty <= 0) { console.warn(`Skipping invalid batch`, receivedBatch); continue; }
+//       if (!Array.isArray(inventoryDoc.batches)) inventoryDoc.batches = [];
+//       const batchIndex = inventoryDoc.batches.findIndex(b => b.batchNumber === receivedBatch.batchNumber);
+//       if (batchIndex === -1) {
+//         inventoryDoc.batches.push({ batchNumber: receivedBatch.batchNumber, quantity: batchQty, expiryDate: receivedBatch.expiryDate ? new Date(receivedBatch.expiryDate) : null, manufacturer: receivedBatch.manufacturer || "", unitPrice: receivedBatch.unitPrice || 0, bin: batchBinId ? new Types.ObjectId(batchBinId) : null });
+//       } else {
+//         inventoryDoc.batches[batchIndex].quantity += batchQty;
+//         if (batchBinId) inventoryDoc.batches[batchIndex].bin = new Types.ObjectId(batchBinId);
+//       }
+//       inventoryDoc.quantity += batchQty;
+//       await StockMovement.create([{ item: new Types.ObjectId(itemId), warehouse: new Types.ObjectId(warehouseId), bin: batchBinId ? new Types.ObjectId(batchBinId) : null, movementType: "IN", quantity: batchQty, reference: grnId, referenceType: "GRN", remarks: `Stock received via GRN - Batch ${receivedBatch.batchNumber}`, companyId: decodedToken.companyId, createdBy: decodedToken.userId }], );
+//     }
+//   } else {
+//     inventoryDoc.quantity += qty;
+//     await StockMovement.create([{ item: new Types.ObjectId(itemId), warehouse: new Types.ObjectId(warehouseId), bin: binId ? new Types.ObjectId(binId) : null, movementType: "IN", quantity: qty, reference: grnId, referenceType: "GRN", remarks: "Stock received via GRN", companyId: decodedToken.companyId, createdBy: decodedToken.userId }], );
+//   }
 
-    const newFiles = await uploadFiles(files);
-    grnData.attachments = [...existingFiles, ...newFiles];
-    for (const file of removedFiles) {
-      if (file.publicId) await cloudinary.uploader.destroy(file.publicId);
-    }
+//   await inventoryDoc.save();
+//   console.log(`Processed GRN item: ${item.itemCode || itemId}, qty: ${qty}`);
+// }
 
-    const updatedGRN = await GRN.findByIdAndUpdate(grnData._id, grnData, { new: true, session });
-    if (!updatedGRN) return NextResponse.json({ success: false, error: "GRN not found" }, { status: 404 });
+// // ─── POST ─────────────────────────────────────────────────────
+// // ─── POST ─────────────────────────────────────────────────────
+// export async function POST(req) {
+//   await dbConnect();
+//   // REMOVE: const session = await mongoose.startSession();
+//   // REMOVE: session.startTransaction();
 
-    await session.commitTransaction();
-    session.endSession();
+//   try {
+//     const token = getTokenFromHeader(req);
+//     if (!token) throw new Error("Unauthorized: No token provided");
+//     const decoded = verifyJWT(token);
+//     const companyId = decoded?.companyId;
+//     if (!companyId) throw new Error("Unauthorized: Invalid token payload");
 
-    return NextResponse.json({ success: true, message: "GRN updated successfully", data: updatedGRN }, { status: 200 });
-  } catch (error) {
-    await session.abortTransaction();
-    session.endSession();
-    console.error("PUT /api/grn error:", error);
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
-  }
-}
+//     const { fields, files } = await parseForm(req);
+//     const grnData = JSON.parse(fields.grnData || "{}");
+//     const removedFilesPublicIds = JSON.parse(fields.removedFiles || "[]");
+//     const existingFilesMetadata = JSON.parse(fields.existingFiles || "[]");
 
-// ─── GET ──────────────────────────────────────────────────────
-export async function GET(req) {
-  try {
-    await dbConnect();
-    const token = getTokenFromHeader(req);
-    if (!token) return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
-    const decoded = verifyJWT(token);
-    if (!decoded || !decoded.companyId)
-      return NextResponse.json({ success: false, error: "Invalid token" }, { status: 401 });
+//     if (!Array.isArray(grnData.items) || grnData.items.length === 0)
+//       throw new Error("Invalid GRN data: Missing items or invalid structure.");
 
-    const { searchParams } = new URL(req.url);
-    const id = searchParams.get("id");
-    const companyId = decoded.companyId;
+//     grnData.companyId = companyId;
+//     delete grnData._id;
 
-    if (id) {
-      const grn = await GRN.findOne({ _id: id, companyId })
-        .populate("supplier", "supplierCode supplierName")
-        .populate("items.item", "itemCode itemName");
-      if (!grn) return NextResponse.json({ success: false, error: "GRN not found" }, { status: 404 });
-      return NextResponse.json({ success: true, data: grn }, { status: 200 });
-    }
+//     const newUploadedFiles = await uploadFiles(files.newAttachments || [], "grn-attachments", companyId);
+//     grnData.attachments = [
+//       ...(existingFilesMetadata.filter(f => !removedFilesPublicIds.includes(f.publicId)) || []),
+//       ...newUploadedFiles,
+//     ];
+//     await deleteFilesByPublicIds(removedFilesPublicIds);
 
-    const page  = parseInt(searchParams.get("page"))  || 1;
-    const limit = parseInt(searchParams.get("limit")) || 10;
-    const total = await GRN.countDocuments({ companyId });
+//     const now = new Date();
+//     const currentYear = now.getFullYear();
+//     const currentMonth = now.getMonth() + 1;
+//     let fyStart = currentYear, fyEnd = currentYear + 1;
+//     if (currentMonth < 4) { fyStart = currentYear - 1; fyEnd = currentYear; }
+//     const financialYear = `${fyStart}-${String(fyEnd).slice(-2)}`;
+//     const key = "PurchaseGrn";
 
-    const grns = await GRN.find({ companyId })
-      .populate("supplier", "supplierCode supplierName")
-      .populate("items.item", "itemCode itemName")
-      .sort({ createdAt: -1 })
-      .skip((page - 1) * limit)
-      .limit(limit);
+//     // REMOVE .session(session) from these queries
+//     let counter = await Counter.findOne({ id: key, companyId });
+//     if (!counter) {
+//       const created = await Counter.create([{ id: key, companyId, seq: 1 }]);
+//       counter = created[0];
+//     } else {
+//       counter.seq += 1;
+//       await counter.save();
+//     }
 
-    return NextResponse.json({ success: true, data: grns, pagination: { page, limit, total } }, { status: 200 });
-  } catch (error) {
-    console.error("GET /api/grn error:", error);
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
-  }
-}
+//     grnData.documentNumberGrn = `PURCH-GRN/${financialYear}/${String(counter.seq).padStart(5, "0")}`;
+
+//     const [grn] = await GRN.create([grnData]);
+//     const fromPO = !!grnData.purchaseOrderId;
+
+//     for (const item of grnData.items) {
+//       await processGrnItem(item, grn._id, decoded, fromPO); // Remove session parameter
+//     }
+
+//     // REMOVE: await session.commitTransaction();
+//     // REMOVE: session.endSession();
+
+//     // ✅ AUTO ACCOUNTING ENTRY
+//     try {
+//       const totalAmount = grnData.grandTotal
+//         || grnData.totalAmount
+//         || grnData.total
+//         || grnData.items.reduce((sum, item) => sum + (Number(item.quantity) * Number(item.unitPrice || item.rate || 0)), 0)
+//         || 0;
+
+//       if (totalAmount > 0) {
+//         await autoGRN({
+//           companyId:       companyId,
+//           amount:          totalAmount,
+//           partyId:         grnData.supplier || grnData.supplierId || null,
+//           partyName:       grnData.supplierName || grnData.supplier?.name || "Supplier",
+//           referenceId:     grn._id,
+//           referenceNumber: grn.documentNumberGrn,
+//           narration:       `GRN ${grn.documentNumberGrn} — Stock received`,
+//           date:            grnData.grnDate || new Date(),
+//           createdBy:       decoded.id || decoded.userId,
+//         });
+//       } else {
+//         console.log(`⚠️ GRN ${grn.documentNumberGrn} — amount is 0, skipping accounting entry`);
+//       }
+//     } catch (accountingErr) {
+//       console.error(`⚠️ Accounting entry failed for GRN ${grn.documentNumberGrn}:`, accountingErr.message);
+//     }
+
+//     return NextResponse.json(
+//       { success: true, message: "GRN created successfully and inventory updated", data: grn },
+//       { status: 201 }
+//     );
+//   } catch (error) {
+//     // REMOVE: await session.abortTransaction();
+//     // REMOVE: session.endSession();
+//     console.error("POST /api/grn error:", error.stack || error);
+//     return NextResponse.json(
+//       { success: false, error: error.message || "Failed to process GRN due to an internal server error." },
+//       { status: 500 }
+//     );
+//   }
+// }
+// // ─── PUT ──────────────────────────────────────────────────────
+// // No accounting change — PUT sirf GRN fields update karta hai
+// export async function PUT(req) {
+//   const session = await mongoose.startSession();
+//   session.startTransaction();
+//   try {
+//     await dbConnect();
+//     const token = getTokenFromHeader(req);
+//     if (!token) return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
+//     const decoded = verifyJWT(token);
+//     if (!decoded || !decoded.companyId)
+//       return NextResponse.json({ success: false, error: "Invalid token" }, { status: 401 });
+
+//     const { fields, files } = await parseForm(req);
+//     const grnData = JSON.parse(fields.grnData || "{}");
+//     const removedFiles = JSON.parse(fields.removedFiles || "[]");
+//     const existingFiles = JSON.parse(fields.existingFiles || "[]");
+
+//     if (!grnData._id) return NextResponse.json({ success: false, error: "GRN ID required" }, { status: 400 });
+//     if (!Array.isArray(grnData.items) || grnData.items.length === 0)
+//       return NextResponse.json({ success: false, error: "At least one item required" }, { status: 400 });
+
+//     for (let i = 0; i < grnData.items.length; i++) {
+//       const item = grnData.items[i];
+//       if (!Types.ObjectId.isValid(item.item)) throw new Error(`Invalid item ID for row ${i + 1}`);
+//       if (!Types.ObjectId.isValid(item.warehouse)) throw new Error(`Invalid warehouse ID for row ${i + 1}`);
+//     }
+
+//     const newFiles = await uploadFiles(files);
+//     grnData.attachments = [...existingFiles, ...newFiles];
+//     for (const file of removedFiles) {
+//       if (file.publicId) await cloudinary.uploader.destroy(file.publicId);
+//     }
+
+//     const updatedGRN = await GRN.findByIdAndUpdate(grnData._id, grnData, { new: true, session });
+//     if (!updatedGRN) return NextResponse.json({ success: false, error: "GRN not found" }, { status: 404 });
+
+//     await session.commitTransaction();
+//     session.endSession();
+
+//     return NextResponse.json({ success: true, message: "GRN updated successfully", data: updatedGRN }, { status: 200 });
+//   } catch (error) {
+//     await session.abortTransaction();
+//     session.endSession();
+//     console.error("PUT /api/grn error:", error);
+//     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+//   }
+// }
+
+// // ─── GET ──────────────────────────────────────────────────────
+// export async function GET(req) {
+//   try {
+//     await dbConnect();
+//     const token = getTokenFromHeader(req);
+//     if (!token) return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
+//     const decoded = verifyJWT(token);
+//     if (!decoded || !decoded.companyId)
+//       return NextResponse.json({ success: false, error: "Invalid token" }, { status: 401 });
+
+//     const { searchParams } = new URL(req.url);
+//     const id = searchParams.get("id");
+//     const companyId = decoded.companyId;
+
+//     if (id) {
+//       const grn = await GRN.findOne({ _id: id, companyId })
+//         .populate("supplier", "supplierCode supplierName")
+//         .populate("items.item", "itemCode itemName");
+//       if (!grn) return NextResponse.json({ success: false, error: "GRN not found" }, { status: 404 });
+//       return NextResponse.json({ success: true, data: grn }, { status: 200 });
+//     }
+
+//     const page  = parseInt(searchParams.get("page"))  || 1;
+//     const limit = parseInt(searchParams.get("limit")) || 10;
+//     const total = await GRN.countDocuments({ companyId });
+
+//     const grns = await GRN.find({ companyId })
+//       .populate("supplier", "supplierCode supplierName")
+//       .populate("items.item", "itemCode itemName")
+//       .sort({ createdAt: -1 })
+//       .skip((page - 1) * limit)
+//       .limit(limit);
+
+//     return NextResponse.json({ success: true, data: grns, pagination: { page, limit, total } }, { status: 200 });
+//   } catch (error) {
+//     console.error("GET /api/grn error:", error);
+//     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+//   }
+// }
 
 
 // // File: src/app/api/grn/route.js

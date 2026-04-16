@@ -19,6 +19,8 @@ export default function AccountModal({ isOpen, onClose }) {
   const [locationPermissionDenied, setLocationPermissionDenied] = useState(false);
   const [showRegistrationSuccess, setShowRegistrationSuccess] = useState(false);
 
+
+
   // Check if user just registered
   useEffect(() => {
     const justRegistered = localStorage.getItem("justRegistered");
@@ -35,73 +37,62 @@ export default function AccountModal({ isOpen, onClose }) {
 
   if (!isOpen) return null;
 
-  const captureLocation = () => {
-    return new Promise((resolve, reject) => {
-      if (!navigator.geolocation) {
-        reject(new Error("Geolocation is not supported by your browser"));
-        return;
-      }
+ const captureLocation = () => {
+  return new Promise((resolve, reject) => {
 
-      if (locationPermissionDenied) {
-        reject(new Error("Location permission was denied"));
-        return;
+    // ✅ 1. Check cache first
+    const cached = localStorage.getItem("user_location");
+    if (cached) {
+      return resolve(JSON.parse(cached));
+    }
+
+    if (!navigator.geolocation) {
+      return reject(new Error("Geolocation not supported"));
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const { latitude, longitude } = position.coords;
+
+        let location = {
+          lat: latitude,
+          lng: longitude,
+          city: "Your Location",
+          area: "Unknown",
+          pincode: null,
+          country: "India"
+        };
+
+        // ✅ Optional: Remove API call for speed
+        try {
+          const response = await fetch(
+            `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${latitude}&longitude=${longitude}&localityLanguage=en`
+          );
+          const data = await response.json();
+
+          location.city = data.city || data.locality || "Unknown";
+          location.area = data.principalSubdivision || data.city;
+          location.pincode = data.postcode;
+        } catch {}
+
+        // ✅ Save to cache
+        localStorage.setItem("user_location", JSON.stringify(location));
+
+        resolve(location);
+      },
+      reject,
+      {
+        enableHighAccuracy: false,
+        timeout: 5000,      // ⬅️ reduce timeout
+        maximumAge: 300000 // ⬅️ allow cached GPS (5 min)
       }
-      
-      setCapturingLocation(true);
-      
-      const timeoutId = setTimeout(() => {
-        reject(new Error("Location request timed out"));
-      }, 15000);
-      
-      navigator.geolocation.getCurrentPosition(
-        async (position) => {
-          clearTimeout(timeoutId);
-          const { latitude, longitude } = position.coords;
-          
-          let location = null;
-          
-          try {
-            const response = await fetch(
-              `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${latitude}&longitude=${longitude}&localityLanguage=en`
-            );
-            const data = await response.json();
-            
-            location = {
-              lat: latitude,
-              lng: longitude,
-              city: data.city || data.locality || data.principalSubdivision || "Unknown",
-              area: data.principalSubdivision || data.city,
-              pincode: data.postcode,
-              country: data.countryName || "India"
-            };
-          } catch (error) {
-            location = {
-              lat: latitude,
-              lng: longitude,
-              city: "Your Location",
-              area: "Unknown",
-              pincode: null,
-              country: "India"
-            };
-          }
-          
-          resolve(location);
-        },
-        (error) => {
-          clearTimeout(timeoutId);
-          if (error.code === 1) {
-            setLocationPermissionDenied(true);
-          }
-          reject(error);
-        },
-        { 
-          enableHighAccuracy: false,
-          timeout: 10000, 
-          maximumAge: 60000
-        }
-      );
-    });
-  };
+    );
+  });
+};
+
+  useEffect(() => {
+  captureLocation().catch(() => {});
+}, []);
 
   const handleSendOTP = async () => {
     if (!phone.trim() || phone.length !== 10 || !/^\d+$/.test(phone)) {
