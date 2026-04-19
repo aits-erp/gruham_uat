@@ -152,28 +152,23 @@ function PurchaseQuotationForm() {
 
         <h1 className="text-2xl font-black text-gray-900 mb-8">{editId ? "Edit Quotation" : "New Purchase Quotation"}</h1>
 
-        <SectionCard icon={FaUser} title="Supplier Identity" color="indigo">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-            <div className="sm:col-span-2">
+           <SectionCard icon={FaUser} title="Supplier Details" color="indigo">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="sm:col-span-1">
               <Lbl text="Search Supplier" req />
               <SupplierSearch 
-                onSelectCustomer={s => setFormData(p => ({ 
-                  ...p, 
-                  supplier: s._id, 
-                  supplierName: s.supplierName, 
-                  supplierCode: s.supplierCode, 
-                  contactPerson: s.contactPersonName 
-                }))} 
+                 onSelectSupplier={s => setFormData(p => ({ ...p, 
+    supplier: s._id, 
+    supplierName: s.supplierName, 
+    supplierCode: s.supplierCode, 
+    contactPerson: s.contactPersonName 
+  }))} 
                 initialSupplier={formData.supplier ? { _id: formData.supplier, supplierName: formData.supplierName } : undefined} 
               />
             </div>
-            <ReadField label="Supplier Name" value={formData.supplierName} />
             <ReadField label="Supplier Code" value={formData.supplierCode} />
+            <ReadField label="Supplier Name" value={formData.supplierName} />
             <ReadField label="Contact Person" value={formData.contactPerson} />
-            <div>
-              <Lbl text="Validity Date" />
-              <input className={fi} type="date" name="validUntil" value={formData.validUntil} onChange={handleInputChange} />
-            </div>
           </div>
         </SectionCard>
 

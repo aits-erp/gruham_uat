@@ -199,7 +199,12 @@ function OrderForm() {
             <div className="sm:col-span-1">
               <Lbl text="Search Supplier" req />
               <SupplierSearch 
-                onSelectCustomer={s => setFormData(p => ({ ...p, supplier: s._id, supplierName: s.supplierName, supplierCode: s.supplierCode, contactPerson: s.contactPersonName }))} 
+                 onSelectSupplier={s => setFormData(p => ({ ...p, 
+    supplier: s._id, 
+    supplierName: s.supplierName, 
+    supplierCode: s.supplierCode, 
+    contactPerson: s.contactPersonName 
+  }))} 
                 initialSupplier={formData.supplier ? { _id: formData.supplier, supplierName: formData.supplierName } : undefined} 
               />
             </div>

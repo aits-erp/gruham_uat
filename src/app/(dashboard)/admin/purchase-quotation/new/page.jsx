@@ -220,16 +220,16 @@ function PurchaseQuotationForm() {
     }
   }, [editId]);
 
-  const handleSupplierSelect = useCallback((selectedSupplier) => {
-    console.log("Selected supplier:", selectedSupplier);
-    setFormData((prev) => ({
-      ...prev,
-      supplier: selectedSupplier._id || "",
-      supplierCode: selectedSupplier.supplierCode || "",
-      supplierName: selectedSupplier.supplierName || "",
-      contactPerson: selectedSupplier.contactPersonName || selectedSupplier.contactPerson || "",
-    }));
-  }, []);
+  // const handleSupplierSelect = useCallback((selectedSupplier) => {
+  //   console.log("Selected supplier:", selectedSupplier);
+  //   setFormData((prev) => ({
+  //     ...prev,
+  //     supplier: selectedSupplier._id || "",
+  //     supplierCode: selectedSupplier.supplierCode || "",
+  //     supplierName: selectedSupplier.supplierName || "",
+  //     contactPerson: selectedSupplier.contactPersonName || selectedSupplier.contactPerson || "",
+  //   }));
+  // }, []);
 
   const handleInputChange = useCallback((e) => {
     const { name, value } = e.target;
@@ -362,43 +362,25 @@ function PurchaseQuotationForm() {
     <div className="m-11 p-5 shadow-xl">
       <h1 className="text-2xl font-bold mb-4">{editId ? "Edit Purchase Quotation" : "Create Purchase Quotation"}</h1>
       <div className="flex flex-wrap justify-between m-10 p-5 border rounded-lg shadow-lg">
-        <div className="basis-full md:basis-1/2 px-2 space-y-4">
-          <div>
-            <label className="block mb-2 font-medium">Supplier Name</label>
-            <SupplierSearch onSelectSupplier={handleSupplierSelect} />
-          </div>
-          <div>
-            <label className="block mb-2 font-medium">Supplier Code</label>
-            <input
-              type="text"
-              name="supplierCode"
-              value={formData.supplierCode || ""}
-              readOnly
-              className="w-full p-2 border rounded bg-gray-100"
-            />
-          </div>
-          <div>
-            <label className="block mb-2 font-medium">Contact Person</label>
-            <input
-              type="text"
-              name="contactPerson"
-              value={formData.contactPerson || ""}
-              readOnly
-              className="w-full p-2 border rounded bg-gray-100"
-            />
-          </div>
-          <div>
-            <label className="block mb-2 font-medium">Reference Number</label>
-            <input
-              type="text"
-              name="refNumber"
-              value={formData.refNumber || ""}
-              onChange={handleInputChange}
-              className="w-full p-2 border rounded"
-              placeholder="Auto-generated if blank (e.g., PQ-001)"
-            />
-          </div>
-        </div>
+          <SectionCard icon={FaUser} title="Supplier Details" color="indigo">
+               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                 <div className="sm:col-span-1">
+                   <Lbl text="Search Supplier" req />
+                   <SupplierSearch 
+                      onSelectSupplier={s => setFormData(p => ({ ...p, 
+         supplier: s._id, 
+         supplierName: s.supplierName, 
+         supplierCode: s.supplierCode, 
+         contactPerson: s.contactPersonName 
+       }))} 
+                     initialSupplier={formData.supplier ? { _id: formData.supplier, supplierName: formData.supplierName } : undefined} 
+                   />
+                 </div>
+                 <ReadField label="Supplier Code" value={formData.supplierCode} />
+                 <ReadField label="Supplier Name" value={formData.supplierName} />
+                 <ReadField label="Contact Person" value={formData.contactPerson} />
+               </div>
+             </SectionCard>
         <div className="basis-full md:basis-1/2 px-2 space-y-4">
           <div>
             <label className="block mb-2 font-medium">Status</label>
