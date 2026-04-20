@@ -22,7 +22,9 @@ const BatchSchema = new Schema(
 const SalesInvoiceItemSchema = new Schema(
   {
     item: { type: Schema.Types.ObjectId, ref: "Item", required: true },
-    itemCode: { type: String, required: true },
+      variantId: { type: Number, default: null },          // ✅ NEW
+  variantName: { type: String },  
+    itemCode: { type: String,  },
     itemName: { type: String, required: true },
     itemId: { type: String },
     itemDescription: { type: String },

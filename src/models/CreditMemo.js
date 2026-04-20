@@ -12,6 +12,8 @@ const BatchSchema = new mongoose.Schema({
 const ItemSchema = new mongoose.Schema({
   // You might reference an Item collection if needed.
   item: { type: mongoose.Schema.Types.ObjectId, ref: "Item", required: true },
+    variantId: { type: Number, default: null },          // ✅ NEW
+  variantName: { type: String },  
   itemCode: { type: String, required: true },
   itemName: { type: String, required: true },
   itemDescription: { type: String},

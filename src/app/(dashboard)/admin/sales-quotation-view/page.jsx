@@ -8,6 +8,7 @@ import {
   FaEdit, FaTrash, FaCopy, FaEye,
   FaEnvelope, FaWhatsapp, FaSearch, FaPlus,
   FaFileAlt, FaCheckCircle, FaClock, FaTimesCircle,
+  
 } from "react-icons/fa";
 import { toast } from "react-toastify";
 import ActionMenu from "@/components/ActionMenu";
@@ -17,7 +18,9 @@ export default function SalesQuotationList() {
   const [search,     setSearch]     = useState("");
   const [loading,    setLoading]    = useState(true);
   const [filterStatus, setFilterStatus] = useState("All");
+  const [copyingOrder, setCopyingOrder] = useState(false);
   const router = useRouter();
+
 
   const fetchQuotations = async () => {
     setLoading(true);
@@ -62,11 +65,54 @@ export default function SalesQuotationList() {
     }
   };
 
-  const handleCopyTo = (quotation, dest) => {
+  // Enrich quotation items with full variant data from item master
+  const enrichQuotationWithVariants = async (quotation, token) => {
+    const enrichedItems = [];
+    for (const item of quotation.items) {
+      try {
+        const res = await axios.get(`/api/items/${item.item}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const itemMaster = res.data.data;
+        enrichedItems.push({
+          ...item,
+          enableVariants: itemMaster.enableVariants || false,
+          variants: itemMaster.variants || [],
+          // Keep existing variantId and variantName from quotation
+          variantId: item.variantId || null,
+          variantName: item.variantName || null,
+        });
+      } catch (err) {
+        console.error("Failed to fetch item master for", item.item, err);
+        enrichedItems.push({
+          ...item,
+          enableVariants: false,
+          variants: [],
+        });
+      }
+    }
+    return { ...quotation, items: enrichedItems };
+  };
+
+  const handleCopyTo = async (quotation, dest) => {
     if (dest === "Order") {
-      const data = { ...quotation, sourceId: quotation._id, sourceModel: "Quotation" };
-      sessionStorage.setItem("salesOrderData", JSON.stringify(data));
-      router.push("/admin/sales-order-view/new");
+      setCopyingOrder(true);
+      try {
+        const token = localStorage.getItem("token");
+        const enrichedQuotation = await enrichQuotationWithVariants(quotation, token);
+        const data = {
+          ...enrichedQuotation,
+          sourceId: quotation._id,
+          sourceModel: "Quotation"
+        };
+        sessionStorage.setItem("salesOrderData", JSON.stringify(data));
+        router.push("/admin/sales-order-view/new");
+      } catch (error) {
+        toast.error("Failed to prepare copy for order");
+        console.error(error);
+      } finally {
+        setCopyingOrder(false);
+      }
     }
   };
 
@@ -222,7 +268,7 @@ export default function SalesQuotationList() {
 
                     {/* Actions */}
                     <td className="px-4 py-3">
-                      <RowMenu quotation={q} onDelete={handleDelete} onCopy={handleCopyTo} />
+                      <RowMenu quotation={q} onDelete={handleDelete} onCopy={handleCopyTo} copying={copyingOrder} />
                     </td>
                   </tr>
                 ))}
@@ -254,7 +300,7 @@ export default function SalesQuotationList() {
                         </span>
                         <p className="font-bold text-gray-900 text-sm mt-1.5">{q.customerName || "—"}</p>
                       </div>
-                      <RowMenu quotation={q} onDelete={handleDelete} onCopy={handleCopyTo} />
+                      <RowMenu quotation={q} onDelete={handleDelete} onCopy={handleCopyTo} copying={copyingOrder} />
                     </div>
                     <div className="flex flex-wrap gap-3 mt-2">
                       <span className="text-xs text-gray-400 font-medium">
@@ -276,8 +322,8 @@ export default function SalesQuotationList() {
   );
 }
 
-// ── RowMenu — unchanged logic, same ActionMenu component ──
-function RowMenu({ quotation, onDelete, onCopy }) {
+// ── RowMenu with copying prop ──
+function RowMenu({ quotation, onDelete, onCopy, copying }) {
   const router = useRouter();
 
   const actions = [
@@ -295,6 +341,7 @@ function RowMenu({ quotation, onDelete, onCopy }) {
       icon: <FaCopy />,
       label: "Copy → Order",
       onClick: () => onCopy(quotation, "Order"),
+      disabled: copying,
     },
     {
       icon: <FaEnvelope />,

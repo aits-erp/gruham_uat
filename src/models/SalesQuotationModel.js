@@ -7,6 +7,8 @@ const { Schema } = mongoose;
 const ItemSchema = new mongoose.Schema(
  {
      item: { type: mongoose.Schema.Types.ObjectId, ref: "Item", required: true },
+      variantId: { type: Number, default: null },          // ✅ NEW
+      variantName: { type: String },  
      itemCode: { type: String },
      itemName: { type: String },
      itemDescription: { type: String },

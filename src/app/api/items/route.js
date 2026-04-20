@@ -73,7 +73,7 @@ export async function GET(req) {
     }
     
     const items = await Item.find(query)
-    .select('_id itemName unitPrice imageUrl description category uom variants enableVariants companyId')
+    .select('_id itemCode itemName unitPrice imageUrl description category uom variants status enableVariants companyId')
     .sort({ createdAt: -1 });
 
     return NextResponse.json({ success: true, data: items }, { status: 200 });

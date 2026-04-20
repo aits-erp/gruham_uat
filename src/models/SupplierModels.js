@@ -147,8 +147,7 @@ const SupplierSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 SupplierSchema.index({ supplierCode: 1 });
-SupplierSchema.index({ emailId: 1 });
-SupplierSchema.index({ mobileNumber: 1 });
+
 
 SupplierSchema.post("save", function (error, doc, next) {
   if (error.name === "MongoServerError" && error.code === 11000) {

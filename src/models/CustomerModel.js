@@ -117,9 +117,8 @@ contactEmails: [
   collection: "customers"
 });
 
-customerSchema.index({ companyId: 1, customerCode: 1 }, { unique: true, sparse: true });
-customerSchema.index({ companyId: 1, emailId: 1 }, { unique: true, sparse: true });
-customerSchema.index({ mobileNumber: 1 });
+customerSchema.index({ companyId: 1, customerCode: 1 });
+
 
 customerSchema.post("save", function (error, doc, next) {
   if (error.name === "MongoServerError" && error.code === 11000) {

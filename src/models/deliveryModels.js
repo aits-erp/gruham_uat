@@ -15,6 +15,8 @@ const BatchSchema = new Schema({
 // Item schema
 const ItemSchema = new Schema({
   item: { type: Schema.Types.ObjectId, ref: "Item", required: true },
+    variantId: { type: Number, default: null },          // ✅ NEW
+  variantName: { type: String },  
   itemCode: String,
   itemName: String,
   itemDescription: String,
